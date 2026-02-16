@@ -1,0 +1,25 @@
+{
+  "name": "model-context-tool-inspector",
+  "version": "2.0.0",
+  "description": "Inspect, test, and debug WebMCP tools with manual and AI-assisted execution",
+  "type": "module",
+  "scripts": {
+    "icons": "node icons/generate_icons.js",
+    "build": "node build.js",
+    "dev": "node build.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "keywords": [
+    "webmcp",
+    "mcp",
+    "ai",
+    "chrome-extension"
+  ],
+  "license": "Apache-2.0"
+}

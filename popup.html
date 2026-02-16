@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebMCP Inspector</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      width: 360px;
+      min-height: 200px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      color: #1f2937;
+      background: #ffffff;
+    }
+    
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px;
+      background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+      color: white;
+    }
+    
+    .header-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      object-fit: cover;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+      background: transparent;
+    }
+    
+    .header-content h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0;
+    }
+    
+    .header-content p {
+      font-size: 12px;
+      opacity: 0.9;
+      margin: 2px 0 0 0;
+    }
+    
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: #f3f4f6;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+    }
+    
+    .status-indicator.active {
+      background: #22c55e;
+    }
+    
+    .tool-count {
+      background: #2563eb;
+      color: white;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    
+    .content {
+      padding: 16px;
+    }
+    
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+    
+    .tool-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    
+    .tool-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .tool-item:hover {
+      background: #f3f4f6;
+      border-color: #d1d5db;
+    }
+    
+    .tool-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    
+    .tool-name {
+      font-weight: 500;
+      font-size: 13px;
+      color: #111827;
+    }
+    
+    .tool-type {
+      font-size: 11px;
+      color: #6b7280;
+    }
+    
+    .tool-action {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #2563eb;
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    
+    .tool-action:hover {
+      background: #eff6ff;
+      border-color: #2563eb;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 32px 16px;
+      color: #6b7280;
+    }
+    
+    .empty-state-icon {
+      font-size: 32px;
+      margin-bottom: 12px;
+    }
+    
+    .empty-state-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: #374151;
+      margin-bottom: 4px;
+    }
+    
+    .empty-state-desc {
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    
+    .actions {
+      display: flex;
+      gap: 8px;
+      padding: 16px;
+      border-top: 1px solid #e5e7eb;
+    }
+    
+    .btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+    
+    .btn-secondary {
+      background: #f3f4f6;
+      color: #374151;
+      border: 1px solid #e5e7eb;
+    }
+    
+    .btn-secondary:hover {
+      background: #e5e7eb;
+    }
+    
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: #f9fafb;
+      border-top: 1px solid #e5e7eb;
+      font-size: 11px;
+      color: #6b7280;
+    }
+    
+    .footer a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+    
+    .footer a:hover {
+      text-decoration: underline;
+    }
+    
+    /* Dark mode */
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: #111827;
+        color: #f9fafb;
+      }
+      
+      .status-bar {
+        background: #1f2937;
+        border-color: #374151;
+      }
+      
+      .status-item {
+        color: #9ca3af;
+      }
+      
+      .section-title {
+        color: #9ca3af;
+      }
+      
+      .tool-item {
+        background: #1f2937;
+        border-color: #374151;
+      }
+      
+      .tool-item:hover {
+        background: #374151;
+        border-color: #4b5563;
+      }
+      
+      .tool-name {
+        color: #f9fafb;
+      }
+      
+      .tool-type {
+        color: #9ca3af;
+      }
+      
+      .tool-action {
+        background: #111827;
+        border-color: #374151;
+        color: #60a5fa;
+      }
+      
+      .empty-state-title {
+        color: #f9fafb;
+      }
+      
+      .btn-secondary {
+        background: #374151;
+        color: #f9fafb;
+        border-color: #4b5563;
+      }
+      
+      .btn-secondary:hover {
+        background: #4b5563;
+      }
+      
+      .footer {
+        background: #1f2937;
+        border-color: #374151;
+        color: #9ca3af;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon32.png" alt="WebMCP Inspector logo" class="header-icon" />
+    <div class="header-content">
+      <h1>WebMCP Inspector</h1>
+      <p>Inspect and test WebMCP tools</p>
+    </div>
+  </div>
+  
+  <div class="status-bar">
+    <div class="status-item">
+      <div class="status-indicator" id="apiStatus"></div>
+      <span id="apiStatusText">Checking...</span>
+    </div>
+    <div class="tool-count" id="toolCount">0 tools</div>
+  </div>
+  
+  <div class="content">
+    <div class="section-title">Available Tools</div>
+    
+    <div id="toolsContainer">
+      <!-- Tools will be loaded here -->
+      <div class="empty-state">
+        <div class="empty-state-icon">🔍</div>
+        <div class="empty-state-title">No tools found</div>
+        <div class="empty-state-desc">
+          Navigate to a page with WebMCP tools, or enable the WebMCP flag in chrome://flags
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="actions">
+    <button class="btn btn-secondary" id="refreshBtn">
+      🔄 Refresh
+    </button>
+    <button class="btn btn-primary" id="openSidePanelBtn">
+      🔍 Open Inspector
+    </button>
+  </div>
+  
+  <div class="footer">
+    <span id="popupVersion">WebMCP Inspector</span>
+    <a href="https://webmachinelearning.github.io/webmcp/" target="_blank" rel="noopener noreferrer">Learn more →</a>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>

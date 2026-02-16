@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<!--
+ Copyright 2026 Google LLC
+ SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebMCP Inspector</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="header-row">
+          <div class="brand-block">
+            <img src="icons/icon48.png" alt="WebMCP Inspector logo" class="brand-logo" />
+            <div>
+              <h1>WebMCP Inspector</h1>
+              <p class="subtitle">Inspect and test WebMCP tools</p>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button id="headerRefreshBtn" class="btn btn-secondary btn-small" title="Refresh tools">
+              🔄 Refresh
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="context-bar">
+        <div class="context-left">
+          <span id="contextDot" class="context-dot"></span>
+          <span id="contextText">Checking current page...</span>
+        </div>
+        <div class="context-right">
+          <span class="badge" id="tabToolCount">0</span>
+        </div>
+      </div>
+
+      <div id="globalStatus" class="status-bar" hidden></div>
+
+      <nav class="tab-nav" aria-label="Inspector tabs">
+        <button class="tab-btn active" data-tab="tools">🔧 Tools</button>
+        <button class="tab-btn" data-tab="ai">🤖 AI Chat</button>
+        <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+        <button class="tab-btn" data-tab="help">❓ Help</button>
+      </nav>
+
+      <main class="tab-panels">
+        <section id="tab-tools" class="tab-panel active">
+          <div class="panel-card">
+            <div class="panel-title-row">
+              <h2>Available Tools</h2>
+              <button id="toolsRefreshBtn" class="btn btn-secondary btn-small">Refresh</button>
+            </div>
+            <div class="input-row">
+              <input id="toolSearchInput" type="text" placeholder="Search tools..." />
+            </div>
+
+            <div class="tool-groups">
+              <div class="tool-group">
+                <div class="group-header">Imperative Tools <span id="imperativeCount" class="badge badge-subtle">0</span></div>
+                <div id="imperativeToolList" class="tool-list"></div>
+              </div>
+              <div class="tool-group">
+                <div class="group-header">Declarative Tools <span id="declarativeCount" class="badge badge-subtle">0</span></div>
+                <div id="declarativeToolList" class="tool-list"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel-card" id="toolDetailCard">
+            <div class="panel-title-row">
+              <h2 id="selectedToolName">Select a tool</h2>
+              <button id="copySelectedToolBtn" class="btn btn-secondary btn-small" disabled>📋 Copy</button>
+            </div>
+            <p id="selectedToolDescription" class="muted">Choose a tool from the list to inspect and execute it.</p>
+
+            <div class="details-grid">
+              <div class="detail-row"><span>Type</span><strong id="selectedToolType">-</strong></div>
+              <div class="detail-row"><span>Read only hint</span><strong id="selectedToolReadOnly">-</strong></div>
+              <div class="detail-row"><span>Source</span><strong id="selectedToolSource">-</strong></div>
+            </div>
+
+            <label class="field-label" for="selectedToolSchema">Input Schema</label>
+            <pre id="selectedToolSchema" class="results-panel schema-panel"></pre>
+
+            <label class="field-label" for="toolInputArgs">Input Arguments (JSON)</label>
+            <textarea id="toolInputArgs" class="code-input" disabled>{}</textarea>
+
+            <div class="button-row">
+              <button id="toolInputResetBtn" class="btn btn-secondary" disabled>Reset</button>
+              <button id="toolCopyJsonBtn" class="btn btn-secondary" disabled>Copy JSON</button>
+              <button id="toolExecuteBtn" class="btn" disabled>▶ Execute Tool</button>
+            </div>
+
+            <label class="field-label" for="toolExecutionResult">Result</label>
+            <pre id="toolExecutionResult" class="results-panel"></pre>
+          </div>
+        </section>
+
+        <section id="tab-ai" class="tab-panel">
+          <div class="panel-card">
+            <div class="panel-title-row">
+              <h2>AI Assistant</h2>
+              <div class="inline-actions">
+                <span id="aiProviderLabel" class="provider-pill">Provider: None</span>
+                <button id="goToSettingsBtn" class="btn btn-secondary btn-small">Configure</button>
+              </div>
+            </div>
+
+            <div id="chatTranscript" class="chat-transcript"></div>
+
+            <label class="field-label" for="aiPromptInput">Message</label>
+            <textarea id="aiPromptInput" placeholder="Ask AI to use tools on this page..."></textarea>
+
+            <div class="button-row">
+              <button id="aiSendBtn" class="btn" disabled>Send</button>
+              <button id="aiResetBtn" class="btn btn-secondary">Reset</button>
+              <button id="aiCopyTraceBtn" class="btn btn-secondary">Copy Trace</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-settings" class="tab-panel">
+          <div class="panel-card">
+            <h2>General</h2>
+            <div class="settings-grid">
+              <label class="field-label" for="settingTheme">Theme</label>
+              <select id="settingTheme">
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+
+              <label class="checkbox-row"><input id="settingAutoOpen" type="checkbox" /> Auto-open on WebMCP pages</label>
+              <label class="checkbox-row"><input id="settingNotifications" type="checkbox" /> Show execution notifications</label>
+            </div>
+            <div class="button-row">
+              <button id="saveGeneralSettingsBtn" class="btn">Save General Settings</button>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <h2>AI Providers</h2>
+            <div id="providerCards" class="provider-cards"></div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-title-row">
+              <h2 id="providerEditorTitle">Provider Configuration</h2>
+              <div class="inline-actions">
+                <button id="providerRefreshModelsBtn" class="btn btn-secondary btn-small" disabled>Refresh Models</button>
+                <button id="providerTestBtn" class="btn btn-secondary btn-small" disabled>Test Connection</button>
+              </div>
+            </div>
+
+            <div id="providerStatus" class="status-inline" hidden></div>
+
+            <div class="settings-grid">
+              <label class="field-label" for="providerApiKey">API Key</label>
+              <input id="providerApiKey" type="password" autocomplete="off" placeholder="Enter API key" />
+
+              <label class="field-label" for="providerServerUrl">Server URL</label>
+              <input id="providerServerUrl" type="url" placeholder="http://127.0.0.1:11434" />
+
+              <label class="field-label" for="providerOrganization">Organization (optional)</label>
+              <input id="providerOrganization" type="text" placeholder="org-..." />
+
+              <label class="field-label" for="providerModelSelect">Model</label>
+              <select id="providerModelSelect"></select>
+
+              <label class="field-label" for="providerTemperature">Temperature</label>
+              <input id="providerTemperature" type="number" min="0" max="2" step="0.1" />
+
+              <label class="field-label" for="providerMaxTokens">Max Tokens</label>
+              <input id="providerMaxTokens" type="number" min="1" step="1" />
+
+              <label class="field-label" for="providerSystemPrompt">System Prompt</label>
+              <textarea id="providerSystemPrompt" class="code-input"></textarea>
+            </div>
+
+            <div class="button-row">
+              <button id="providerSaveBtn" class="btn" disabled>Save Provider</button>
+              <button id="providerSaveDefaultBtn" class="btn btn-secondary" disabled>Save + Set Default</button>
+              <button id="providerDisableBtn" class="btn btn-secondary" disabled>Disable Provider</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-help" class="tab-panel">
+          <div class="panel-card help-content">
+            <h2>Help</h2>
+            <p class="help-meta">
+              Project repository:
+              <a id="helpRepoLink" href="#" target="_blank" rel="noopener noreferrer">Not configured</a>
+            </p>
+            <p class="help-meta">
+              Extension ID:
+              <code id="helpExtensionId">&lt;your-extension-id&gt;</code>
+            </p>
+            <ol>
+              <li>Enable the WebMCP testing flag: <code>chrome://flags/#enable-webmcp-testing</code>.</li>
+              <li>Open a WebMCP-enabled website.</li>
+              <li>Use <strong>Refresh</strong> when tools are dynamically registered later.</li>
+              <li>Configure an AI provider in <strong>Settings</strong> for AI-assisted tool usage.</li>
+            </ol>
+
+            <h3>Ollama Local Troubleshooting</h3>
+            <ol>
+              <li>If AI shows <code>HTTP 403</code>, allow the extension origin and restart Ollama:</li>
+            </ol>
+            <pre id="helpOllamaExportBlock" class="help-code-block">export OLLAMA_ORIGINS="chrome-extension://&lt;your-extension-id&gt;"
+export OLLAMA_HOST="127.0.0.1:11434"
+ollama serve</pre>
+            <ol start="2">
+              <li>If AI shows <code>Failed to fetch</code>, Ollama is not reachable. Use server URL <code>http://127.0.0.1:11434</code> in Settings.</li>
+              <li>Verify from terminal:</li>
+            </ol>
+            <pre id="helpOllamaCurlBlock" class="help-code-block">curl -i -H "Origin: chrome-extension://&lt;your-extension-id&gt;" http://127.0.0.1:11434/api/tags</pre>
+            <ol start="4">
+              <li>Expected result is <code>HTTP/1.1 200</code>, then click <strong>Refresh Models</strong> and retry AI Chat.</li>
+            </ol>
+
+            <div class="info-box">
+              Tool discovery and execution require APIs exposed by the current browser build.
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="sidebar.js"></script>
+  </body>
+</html>

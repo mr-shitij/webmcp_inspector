@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2563eb;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="gradLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2563eb;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="url(#grad)"/>
+  
+  <!-- Wrench icon -->
+  <g transform="translate(64, 64) rotate(-45)">
+    <!-- Wrench handle -->
+    <rect x="-8" y="-40" width="16" height="50" rx="4" fill="white"/>
+    <!-- Wrench head top -->
+    <path d="M -20,-45 L -8,-35 L -8,-25 L -20,-15 Z" fill="white"/>
+    <path d="M 20,-45 L 8,-35 L 8,-25 L 20,-15 Z" fill="white"/>
+    <!-- Circle in middle -->
+    <circle cx="0" cy="-45" r="10" fill="white"/>
+    <circle cx="0" cy="-45" r="5" fill="#2563eb"/>
+  </g>
+  
+  <!-- AI sparkle dots -->
+  <circle cx="20" cy="30" r="6" fill="#60a5fa" opacity="0.8"/>
+  <circle cx="108" cy="30" r="6" fill="#60a5fa" opacity="0.8"/>
+  <circle cx="20" cy="98" r="6" fill="#60a5fa" opacity="0.8"/>
+  <circle cx="108" cy="98" r="6" fill="#60a5fa" opacity="0.8"/>
+</svg>
