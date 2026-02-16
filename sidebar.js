@@ -844,11 +844,40 @@ class SidePanelApp {
     }
   }
 
+  stableStringify(value, seen = new WeakSet()) {
+    if (value === null || value === undefined) return 'null';
+
+    const valueType = typeof value;
+    if (valueType === 'string') return JSON.stringify(value);
+    if (valueType === 'number' || valueType === 'boolean') return String(value);
+    if (valueType !== 'object') return JSON.stringify(String(value));
+
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => this.stableStringify(item, seen)).join(',')}]`;
+    }
+
+    if (seen.has(value)) {
+      return '"[Circular]"';
+    }
+
+    seen.add(value);
+    const keys = Object.keys(value).sort();
+    const out = keys.map((key) => `${JSON.stringify(key)}:${this.stableStringify(value[key], seen)}`);
+    seen.delete(value);
+    return `{${out.join(',')}}`;
+  }
+
+  buildToolCallSignature(toolName, args) {
+    return `${String(toolName || '')}::${this.stableStringify(args)}`;
+  }
+
   async runAIAgentLoop() {
     const maxTurns = 5;
+    const executedToolCalls = new Map();
+    let toolsEnabled = true;
 
     for (let turn = 0; turn < maxTurns; turn += 1) {
-      const aiResponse = await aiManager.sendMessage(this.aiMessages, this.tools);
+      const aiResponse = await aiManager.sendMessage(this.aiMessages, toolsEnabled ? this.tools : []);
 
       if (aiResponse?.error) {
         throw new Error(aiResponse.error);
@@ -868,6 +897,9 @@ class SidePanelApp {
       }
 
       const toolResultLines = [];
+      let executedThisTurn = 0;
+      let skippedDuplicatesThisTurn = 0;
+
       for (const call of functionCalls) {
         const toolName = call?.name || '(unknown_tool)';
         const rawArgs = call?.args;
@@ -881,6 +913,21 @@ class SidePanelApp {
         }
         if (!args || typeof args !== 'object' || Array.isArray(args)) {
           args = {};
+        }
+
+        const callSignature = this.buildToolCallSignature(toolName, args);
+        const existingCall = executedToolCalls.get(callSignature);
+        if (existingCall?.status === 'success') {
+          skippedDuplicatesThisTurn += 1;
+          const duplicateLine = `${toolName}(${JSON.stringify(args)}) => SKIPPED: duplicate of a successful previous call`;
+          toolResultLines.push(duplicateLine);
+          this.trace.push({
+            ts: new Date().toISOString(),
+            type: 'ai_tool_skipped_duplicate',
+            tool: toolName,
+            args
+          });
+          continue;
         }
 
         const toolDef = this.tools.find((tool) => tool.name === toolName);
@@ -915,6 +962,8 @@ class SidePanelApp {
           toolResultLines.push(
             `${toolName}(${JSON.stringify(args)}) => ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`
           );
+          executedThisTurn += 1;
+          executedToolCalls.set(callSignature, { status: 'success' });
 
           this.trace.push({
             ts: new Date().toISOString(),
@@ -926,6 +975,7 @@ class SidePanelApp {
         } catch (error) {
           const line = `${toolName}(${JSON.stringify(args)}) => ERROR: ${error.message}`;
           toolResultLines.push(line);
+          executedToolCalls.set(callSignature, { status: 'error' });
           this.trace.push({
             ts: new Date().toISOString(),
             type: 'ai_tool_error',
@@ -936,7 +986,24 @@ class SidePanelApp {
         }
       }
 
-      const toolSummary = `Tool call results:\n${toolResultLines.join('\n')}\n\nPlease continue with the task.`;
+      if (executedThisTurn === 0 && skippedDuplicatesThisTurn > 0) {
+        toolsEnabled = false;
+        const guardMessage =
+          'You are repeating identical tool calls that already succeeded. ' +
+          'Do not call tools again for this request. Use prior results and provide the final answer.';
+        this.aiMessages.push({ role: 'user', content: guardMessage });
+        this.appendChatLine('system', 'Duplicate tool-call loop detected. Asking AI for final answer without more tool calls.');
+        this.trace.push({
+          ts: new Date().toISOString(),
+          type: 'ai_loop_guard_triggered',
+          skippedDuplicates: skippedDuplicatesThisTurn
+        });
+        continue;
+      }
+
+      const toolSummary =
+        `Tool call results:\n${toolResultLines.join('\n')}\n\n` +
+        'Continue the task. Do not repeat a tool call with identical arguments if it already succeeded.';
       this.aiMessages.push({ role: 'user', content: toolSummary });
       this.appendChatLine('system', 'Tool results sent back to AI.');
     }
