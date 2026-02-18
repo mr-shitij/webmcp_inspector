@@ -23,15 +23,15 @@ WebMCP Inspector is a Chrome Extension for discovering, inspecting, executing, a
 
 ### Tools
 
-![WebMCP Inspector Tools](./store_assets/chrome_store/01-tools.jpg)
+![WebMCP Inspector Tools](./store_assets/readme/tools.png)
 
 ### AI Chat
 
-![WebMCP Inspector AI Chat](./store_assets/chrome_store/02-ai-chat.jpg)
+![WebMCP Inspector AI Chat](./store_assets/readme/aichat.png)
 
 ### Settings
 
-![WebMCP Inspector Settings](./store_assets/chrome_store/03-settings.jpg)
+![WebMCP Inspector Settings](./store_assets/readme/settings.png)
 
 ## Project Structure
 
