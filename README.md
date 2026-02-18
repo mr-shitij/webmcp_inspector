@@ -4,7 +4,6 @@ WebMCP Inspector is a Chrome Extension for discovering, inspecting, executing, a
 
 - GitHub: [mr-shitij/webmcp_inspector](https://github.com/mr-shitij/webmcp_inspector)
 - Spec: [WebMCP Draft](https://webmachinelearning.github.io/webmcp/)
-- Privacy Policy: [PRIVACY_POLICY.md](./PRIVACY_POLICY.md)
 
 ## Features
 
@@ -19,6 +18,20 @@ WebMCP Inspector is a Chrome Extension for discovering, inspecting, executing, a
 - Dynamic refresh flows for late-registered tools and model lists
 - Provider config editor with connection test and model refresh
 - Trace capture for AI/tool interactions
+
+## Screenshots
+
+### Tools
+
+![WebMCP Inspector Tools](./store_assets/chrome_store/01-tools.jpg)
+
+### AI Chat
+
+![WebMCP Inspector AI Chat](./store_assets/chrome_store/02-ai-chat.jpg)
+
+### Settings
+
+![WebMCP Inspector Settings](./store_assets/chrome_store/03-settings.jpg)
 
 ## Project Structure
 
