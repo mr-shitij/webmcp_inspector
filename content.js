@@ -200,20 +200,76 @@ function errorToString(error) {
   return String(error);
 }
 
+function shouldRetryExecuteWithStringArgs(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  const errorName = String(error?.name || '').toLowerCase();
+  const hasJsonSignal =
+    message.includes('json') ||
+    message.includes('parse') ||
+    message.includes('input');
+  return (
+    message.includes('parse input arguments') ||
+    message.includes('parse input string as json') ||
+    message.includes('failed to parse input string as json') ||
+    message.includes('invalid input arguments') ||
+    message.includes('expected string') ||
+    (errorName === 'unknownerror' && hasJsonSignal)
+  );
+}
+
+function hasDeclarativeFormWithToolName(toolName) {
+  if (!toolName || toolName === '(unnamed_tool)') return false;
+  try {
+    return Boolean(document.querySelector(`form[toolname="${cssEscape(toolName)}"]`));
+  } catch {
+    return false;
+  }
+}
+
+function hasDeclarativeMetadata(tool) {
+  const type = String(tool?.type || '').toLowerCase();
+  const kind = String(tool?.kind || '').toLowerCase();
+  const source = String(tool?.source || '').toLowerCase();
+
+  if (type.includes('declarative') || kind === 'form' || source.includes('form')) {
+    return true;
+  }
+
+  const annotations = tool?.annotations;
+  if (annotations && typeof annotations === 'object') {
+    const annotationValues = Object.values(annotations)
+      .map((value) => String(value).toLowerCase());
+    if (annotationValues.some((value) => value.includes('declarative') || value.includes('form'))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function normalizeTools(rawTools) {
   if (!Array.isArray(rawTools)) return [];
   return rawTools
     .filter((tool) => tool && typeof tool === 'object')
     .map((tool) => {
+      const toolName = tool.name || '(unnamed_tool)';
+      const looksDeclarative = hasDeclarativeMetadata(tool) || hasDeclarativeFormWithToolName(toolName);
       const normalized = {
-        name: tool.name || '(unnamed_tool)',
+        name: toolName,
         description: tool.description || '',
         inputSchema: parseToolInputSchema(tool.inputSchema)
       };
 
-      if (typeof tool.type === 'string') normalized.type = tool.type;
-      if (typeof tool.kind === 'string') normalized.kind = tool.kind;
-      if (typeof tool.source === 'string') normalized.source = tool.source;
+      if (looksDeclarative) {
+        normalized.type = 'declarative';
+        normalized.kind = 'form';
+        normalized.source = 'form';
+      } else {
+        if (typeof tool.type === 'string') normalized.type = tool.type;
+        if (typeof tool.kind === 'string') normalized.kind = tool.kind;
+        if (typeof tool.source === 'string') normalized.source = tool.source;
+      }
+
       if (tool.annotations && typeof tool.annotations === 'object') {
         normalized.annotations = toPlainSerializable(tool.annotations) || {};
       }
@@ -371,14 +427,32 @@ async function executeTool(name, inputArgs) {
   try {
     result = await api.executeTool(safeName, inputArgs);
   } catch (error) {
-    // Some experimental API variants expect JSON string arguments.
-    if (
-      typeof inputArgs !== 'string' &&
-      /parse input arguments/i.test(String(error?.message || ''))
-    ) {
-      result = await api.executeTool(safeName, JSON.stringify(inputArgs));
-    } else {
+    if (typeof inputArgs === 'string') {
       throw error;
+    }
+
+    // Some experimental API variants expect JSON string arguments.
+    if (!shouldRetryExecuteWithStringArgs(error)) {
+      throw error;
+    }
+
+    const stringArgs = JSON.stringify(inputArgs);
+    try {
+      result = await api.executeTool(safeName, stringArgs);
+    } catch (stringModeError) {
+      if (!shouldRetryExecuteWithStringArgs(stringModeError)) {
+        throw stringModeError;
+      }
+
+      // Some builds accept a single invocation envelope argument.
+      try {
+        result = await api.executeTool({
+          name: safeName,
+          inputArgs: stringArgs
+        });
+      } catch {
+        throw stringModeError;
+      }
     }
   }
 
