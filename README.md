@@ -4,7 +4,7 @@ WebMCP Inspector is a Chrome Extension for discovering, inspecting, executing, a
 
 - GitHub: [mr-shitij/webmcp_inspector](https://github.com/mr-shitij/webmcp_inspector)
 - Spec: [WebMCP Draft](https://webmachinelearning.github.io/webmcp/)
-- Chrome Store: Under review
+- Chrome Store: [Chrome Store](https://chromewebstore.google.com/detail/edfjnadfiapmddgplgnphlflgafmcino?utm_source=item-share-cb)
 
 ## Features
 
