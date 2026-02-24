@@ -38,7 +38,9 @@ const DEFAULT_SETTINGS = {
         models: [
           { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Fast, efficient' },
           { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Complex reasoning' },
-          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Legacy compatibility' }
+          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Legacy compatibility' },
+          { id: 'gemma-3-27b-it', name: 'Gemma 3 27B', description: 'Open model, free tier' },
+          { id: 'gemma-3-12b-it', name: 'Gemma 3 12B', description: 'Open model, lightweight' }
         ]
       },
       openai: {
