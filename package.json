@@ -7,6 +7,7 @@
     "icons": "node icons/generate_icons.js",
     "build": "node build.js",
     "dev": "node build.js",
+    "test": "node --test",
     "clean": "rm -rf dist"
   },
   "dependencies": {

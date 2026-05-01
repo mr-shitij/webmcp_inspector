@@ -86,7 +86,7 @@ function isMissingReceiverError(error) {
 async function ensureContentScript(tabId) {
   try {
     await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
+      target: { tabId, allFrames: false },
       files: ['content.js']
     });
     return true;
@@ -100,7 +100,7 @@ async function sendMessageToTab(tabId, payload, options = {}) {
   const { autoInject = true } = options;
 
   try {
-    return await chrome.tabs.sendMessage(tabId, payload);
+    return await chrome.tabs.sendMessage(tabId, payload, { frameId: 0 });
   } catch (error) {
     if (!autoInject || !isMissingReceiverError(error)) {
       throw error;
@@ -111,7 +111,7 @@ async function sendMessageToTab(tabId, payload, options = {}) {
       throw error;
     }
 
-    return chrome.tabs.sendMessage(tabId, payload);
+    return chrome.tabs.sendMessage(tabId, payload, { frameId: 0 });
   }
 }
 
@@ -221,9 +221,16 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
             return;
           }
 
+          if (sender.frameId !== 0) {
+            reply({ received: true, ignored: 'non-top-frame' });
+            return;
+          }
+
           const tabId = sender.tab.id;
+          const incomingTools = Array.isArray(message.tools) ? message.tools : [];
+
           const snapshot = setTabSnapshot(tabId, {
-            tools: Array.isArray(message.tools) ? message.tools : [],
+            tools: incomingTools,
             url: message.url || sender.tab.url || ''
           });
           await updateBadge(tabId, snapshot.tools.length);
