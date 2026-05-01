@@ -16,6 +16,14 @@ console.debug('[WebMCP Inspector] Content script injected');
 
 let toolsChangedCallback = null;
 
+function isTopFrame() {
+  try {
+    return window.top === window;
+  } catch {
+    return false;
+  }
+}
+
 function toPlainSerializable(value, depth = 0, seen = new WeakSet()) {
   if (value === null) return null;
 
@@ -307,6 +315,18 @@ function parseToolInputSchema(schema) {
 
 function listTools() {
   try {
+    if (!isTopFrame()) {
+      console.debug('[WebMCP Inspector] Skipping listTools in non-top frame', location.href);
+      return {
+        success: true,
+        ignored: 'non-top-frame',
+        tools: [],
+        api: null,
+        capabilities: [],
+        url: location.href
+      };
+    }
+
     const api = getWebMCPAPI();
     if (!api) {
       return {
@@ -359,6 +379,8 @@ function listTools() {
 }
 
 function setupToolsChangedListener() {
+  if (!isTopFrame()) return;
+
   const api = getWebMCPAPI();
   if (!api || typeof api.registerToolsChangedCallback !== 'function') return;
 
