@@ -16,7 +16,7 @@ const MAX_MODEL_DESCRIPTION_LENGTH = 140;
 
 // Default settings
 const DEFAULT_SETTINGS = {
-  version: '2.0.0',
+  version: '3.0.1',
   general: {
     theme: 'system',
     language: 'en'
