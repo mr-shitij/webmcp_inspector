@@ -825,7 +825,12 @@ class SidePanelApp {
     this.dom.aiSendBtn.disabled = true;
     this.dom.aiPromptInput.value = '';
 
-    this.aiMessages.push({ role: 'user', content: userPrompt });
+    // If the last message in history is already a user message, coalesce or ensure alternating turns
+    if (this.aiMessages.length > 0 && this.aiMessages[this.aiMessages.length - 1].role === 'user') {
+      this.aiMessages[this.aiMessages.length - 1].content += `\n\n${userPrompt}`;
+    } else {
+      this.aiMessages.push({ role: 'user', content: userPrompt });
+    }
     this.appendChatLine('user', userPrompt);
 
     this.trace.push({
@@ -890,6 +895,10 @@ class SidePanelApp {
         this.aiMessages.push({ role: 'assistant', content: text });
         this.appendChatLine('assistant', text);
         this.trace.push({ ts: new Date().toISOString(), type: 'ai_text', text });
+      } else if (functionCalls.length > 0) {
+        // Record assistant tool intent so conversation history strictly alternates user -> assistant
+        const toolNames = functionCalls.map((c) => c?.name || 'tool').join(', ');
+        this.aiMessages.push({ role: 'assistant', content: `[Calling tools: ${toolNames}]` });
       }
 
       if (functionCalls.length === 0) {

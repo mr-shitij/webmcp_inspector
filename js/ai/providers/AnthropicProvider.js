@@ -95,12 +95,25 @@ class AnthropicProvider extends AIProvider {
     const systemMsg = messages.find(m => m.role === 'system');
     const chatMessages = messages.filter(m => m.role !== 'system');
     
+    const formatted = [];
+    for (const msg of chatMessages) {
+      const role = msg.role === 'assistant' ? 'assistant' : 'user';
+      const content = msg.content || '';
+
+      if (formatted.length > 0 && formatted[formatted.length - 1].role === role) {
+        formatted[formatted.length - 1].content += `\n\n${content}`;
+      } else {
+        formatted.push({ role, content });
+      }
+    }
+
+    if (formatted.length > 0 && formatted[0].role !== 'user') {
+      formatted.unshift({ role: 'user', content: 'Hello' });
+    }
+
     return {
       system: systemMsg?.content,
-      messages: chatMessages.map(m => ({
-        role: m.role,
-        content: m.content
-      }))
+      messages: formatted
     };
   }
 

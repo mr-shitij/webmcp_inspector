@@ -8,7 +8,7 @@ WebMCP Inspector is a Chrome Extension for discovering, inspecting, executing, a
 
 ## Features
 
-- Detects WebMCP APIs on the active page (`navigator.modelContextTesting` / `navigator.modelContext`)
+- Detects WebMCP APIs on the active page (`document.modelContext` / `navigator.modelContextTesting` / `navigator.modelContext`)
 - Lists and categorizes imperative and declarative tools
 - Schema-aware manual tool execution with JSON input normalization
 - AI-assisted tool usage with provider adapters:

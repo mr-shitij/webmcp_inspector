@@ -73,15 +73,26 @@ class GeminiProvider extends AIProvider {
   }
 
   formatMessages(messages) {
-    return messages.map(msg => {
-      if (msg.role === 'system') {
-        return { role: 'user', parts: [{ text: `System: ${msg.content}` }] };
+    const formatted = [];
+    for (const msg of messages) {
+      const role = msg.role === 'assistant' ? 'model' : 'user';
+      const text = msg.role === 'system' ? `System: ${msg.content}` : (msg.content || '');
+
+      if (formatted.length > 0 && formatted[formatted.length - 1].role === role) {
+        formatted[formatted.length - 1].parts.push({ text });
+      } else {
+        formatted.push({
+          role,
+          parts: [{ text }]
+        });
       }
-      return {
-        role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: msg.content }]
-      };
-    });
+    }
+
+    if (formatted.length > 0 && formatted[0].role !== 'user') {
+      formatted.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
+    }
+
+    return formatted;
   }
 
   async sendMessage(messages, tools = []) {

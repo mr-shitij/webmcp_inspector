@@ -85,10 +85,20 @@ function cssEscape(value) {
   return String(value).replace(/["\\]/g, '\\$&');
 }
 
+const lastDiscoveredToolsMap = new Map();
+
 function getWebMCPAPI() {
-  // Prefer testing API because it includes discovery + execution methods used by inspector.
   try {
-    return navigator.modelContextTesting || navigator.modelContext || null;
+    if (typeof document !== 'undefined' && document.modelContext) {
+      return document.modelContext;
+    }
+    if (typeof window !== 'undefined' && window.modelContext) {
+      return window.modelContext;
+    }
+    if (typeof navigator !== 'undefined') {
+      return navigator.modelContextTesting || navigator.modelContext || null;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -97,9 +107,13 @@ function getWebMCPAPI() {
 function detectApiFlavor(api) {
   try {
     if (!api) return null;
-    if (api === navigator.modelContextTesting) return 'testing';
-    if (api === navigator.modelContext) return 'stable';
-    return 'unknown';
+    if (typeof document !== 'undefined' && api === document.modelContext) return 'document.modelContext';
+    if (typeof window !== 'undefined' && api === window.modelContext) return 'window.modelContext';
+    if (typeof navigator !== 'undefined') {
+      if (api === navigator.modelContextTesting) return 'testing';
+      if (api === navigator.modelContext) return 'navigator.modelContext';
+    }
+    return 'custom';
   } catch {
     return null;
   }
@@ -108,8 +122,10 @@ function detectApiFlavor(api) {
 function getCapabilities(api) {
   if (!api) return [];
   const names = [
+    'getTools',
     'listTools',
     'executeTool',
+    'addEventListener',
     'registerToolsChangedCallback',
     'getCrossDocumentScriptToolResult',
     'registerTool',
@@ -228,7 +244,9 @@ function shouldRetryExecuteWithStringArgs(error) {
 function hasDeclarativeFormWithToolName(toolName) {
   if (!toolName || toolName === '(unnamed_tool)') return false;
   try {
-    return Boolean(document.querySelector(`form[toolname="${cssEscape(toolName)}"]`));
+    return Boolean(
+      document.querySelector(`form[toolname="${cssEscape(toolName)}"], form[tool-name="${cssEscape(toolName)}"]`)
+    );
   } catch {
     return false;
   }
@@ -253,6 +271,94 @@ function hasDeclarativeMetadata(tool) {
   }
 
   return false;
+}
+
+function extractDeclarativeFormTool(form) {
+  if (!form) return null;
+  const name = form.getAttribute('toolname') || form.getAttribute('tool-name') || form.name || form.id;
+  if (!name || name === '(unnamed_tool)') return null;
+
+  const description =
+    form.getAttribute('tooldescription') ||
+    form.getAttribute('tool-description') ||
+    form.getAttribute('title') ||
+    form.getAttribute('aria-label') ||
+    '';
+
+  const properties = {};
+  const required = [];
+
+  const elements = form.elements || [];
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    const paramName =
+      el.getAttribute('toolparamname') ||
+      el.getAttribute('tool-param-name') ||
+      el.name ||
+      el.id;
+    const tagName = el.tagName ? el.tagName.toLowerCase() : '';
+    const typeAttr = el.type ? el.type.toLowerCase() : '';
+
+    if (!paramName || tagName === 'button' || typeAttr === 'submit' || typeAttr === 'reset' || typeAttr === 'button') {
+      continue;
+    }
+
+    const prop = {};
+    if (typeAttr === 'number' || typeAttr === 'range') {
+      prop.type = 'number';
+    } else if (typeAttr === 'checkbox') {
+      prop.type = 'boolean';
+    } else {
+      prop.type = 'string';
+    }
+
+    const paramDesc =
+      el.getAttribute('toolparamdescription') ||
+      el.getAttribute('tool-param-description') ||
+      el.placeholder ||
+      el.title ||
+      '';
+    if (paramDesc) {
+      prop.description = paramDesc;
+    }
+
+    properties[paramName] = prop;
+    if (el.required && !required.includes(paramName)) {
+      required.push(paramName);
+    }
+  }
+
+  return {
+    name,
+    description,
+    inputSchema: {
+      type: 'object',
+      properties,
+      required
+    },
+    type: 'declarative',
+    kind: 'form',
+    source: 'form'
+  };
+}
+
+function scanDeclarativeFormsInDom() {
+  const forms = [];
+  try {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') {
+      return forms;
+    }
+    const elements = document.querySelectorAll('form[toolname], form[tool-name]');
+    for (const form of elements) {
+      const tool = extractDeclarativeFormTool(form);
+      if (tool) {
+        forms.push(tool);
+      }
+    }
+  } catch (err) {
+    console.debug('[WebMCP Inspector] Failed scanning DOM for declarative forms:', err);
+  }
+  return forms;
 }
 
 function normalizeTools(rawTools) {
@@ -313,7 +419,7 @@ function parseToolInputSchema(schema) {
   return { type: 'object', properties: {} };
 }
 
-function listTools() {
+async function listTools() {
   try {
     if (!isTopFrame()) {
       console.debug('[WebMCP Inspector] Skipping listTools in non-top frame', location.href);
@@ -328,39 +434,67 @@ function listTools() {
     }
 
     const api = getWebMCPAPI();
-    if (!api) {
-      return {
-        success: false,
-        error: 'WebMCP API is not available on this page',
-        tools: [],
-        api: null,
-        capabilities: []
-      };
+    let rawTools = [];
+    let warning = null;
+
+    if (api) {
+      if (typeof api.getTools === 'function') {
+        try {
+          const result = await api.getTools();
+          rawTools = Array.isArray(result) ? result : [];
+        } catch (error) {
+          console.debug('[WebMCP Inspector] api.getTools() error:', error);
+          warning = `getTools() error: ${errorToString(error)}`;
+        }
+      } else if (typeof api.listTools === 'function') {
+        try {
+          const result = api.listTools();
+          rawTools = Array.isArray(result) ? result : [];
+        } catch (error) {
+          console.debug('[WebMCP Inspector] api.listTools() error:', error);
+          warning = `listTools() error: ${errorToString(error)}`;
+        }
+      } else {
+        warning = 'Current API surface does not expose getTools() or listTools().';
+        sendStatus('WebMCP detected, but tool discovery method is unavailable.', 'warning');
+      }
     }
 
-    if (typeof api.listTools !== 'function') {
-      sendStatus('WebMCP detected, but listTools() is unavailable in this API surface.', 'warning');
-      return {
-        success: true,
-        tools: [],
-        api: detectApiFlavor(api),
-        capabilities: getCapabilities(api),
-        warning: 'Current API surface does not expose listTools().'
-      };
+    const normalizedTools = normalizeTools(rawTools);
+
+    // Cache raw tools for executeTool reference lookup
+    lastDiscoveredToolsMap.clear();
+    for (const raw of rawTools) {
+      if (raw && raw.name) {
+        lastDiscoveredToolsMap.set(raw.name, {
+          rawTool: raw,
+          normalized: normalizedTools.find((t) => t.name === raw.name)
+        });
+      }
     }
 
-    const tools = normalizeTools(api.listTools());
+    // Complement with declarative forms found directly in the DOM
+    const declarativeForms = scanDeclarativeFormsInDom();
+    for (const dTool of declarativeForms) {
+      if (!normalizedTools.some((t) => t.name === dTool.name)) {
+        normalizedTools.push(dTool);
+      }
+    }
+
     const payload = {
       success: true,
-      tools,
+      tools: normalizedTools,
       api: detectApiFlavor(api),
       capabilities: getCapabilities(api),
       url: location.href
     };
+    if (warning) {
+      payload.warning = warning;
+    }
 
     sendRuntimeMessage({
       type: 'TOOLS_LIST',
-      tools,
+      tools: normalizedTools,
       url: location.href
     });
 
@@ -378,55 +512,142 @@ function listTools() {
   }
 }
 
+let toolChangeListenerAttached = false;
+let domMutationObserver = null;
+
 function setupToolsChangedListener() {
   if (!isTopFrame()) return;
 
   const api = getWebMCPAPI();
-  if (!api || typeof api.registerToolsChangedCallback !== 'function') return;
+  const onToolsChanged = () => {
+    console.debug('[WebMCP Inspector] Tools changed event received');
+    listTools().catch(() => {});
+  };
 
-  if (toolsChangedCallback && typeof api.unregisterToolsChangedCallback === 'function') {
+  if (api) {
+    // Modern W3C EventTarget listener
+    if (typeof api.addEventListener === 'function' && !toolChangeListenerAttached) {
+      try {
+        api.addEventListener('toolchange', onToolsChanged);
+        api.addEventListener('toolschange', onToolsChanged);
+        toolChangeListenerAttached = true;
+      } catch (err) {
+        console.debug('[WebMCP Inspector] Failed to attach toolchange event listener:', err);
+      }
+    }
+
+    // Legacy registerToolsChangedCallback
+    if (typeof api.registerToolsChangedCallback === 'function') {
+      if (toolsChangedCallback && typeof api.unregisterToolsChangedCallback === 'function') {
+        try {
+          api.unregisterToolsChangedCallback(toolsChangedCallback);
+        } catch {
+          // best effort
+        }
+      }
+
+      toolsChangedCallback = onToolsChanged;
+
+      try {
+        api.registerToolsChangedCallback(toolsChangedCallback);
+      } catch (error) {
+        console.debug('[WebMCP Inspector] Failed to register tools changed callback:', error.message);
+      }
+    }
+  }
+
+  // Observe DOM for declarative form mutations
+  if (typeof MutationObserver !== 'undefined' && !domMutationObserver && typeof document !== 'undefined' && document.body) {
     try {
-      api.unregisterToolsChangedCallback(toolsChangedCallback);
+      domMutationObserver = new MutationObserver((mutations) => {
+        let hasFormMutation = false;
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (node.nodeType === 1) {
+              if (node.matches?.('form[toolname], form[tool-name]') || node.querySelector?.('form[toolname], form[tool-name]')) {
+                hasFormMutation = true;
+                break;
+              }
+            }
+          }
+          if (hasFormMutation) break;
+          for (const node of m.removedNodes) {
+            if (node.nodeType === 1) {
+              if (node.matches?.('form[toolname], form[tool-name]') || node.querySelector?.('form[toolname], form[tool-name]')) {
+                hasFormMutation = true;
+                break;
+              }
+            }
+          }
+          if (hasFormMutation) break;
+        }
+        if (hasFormMutation) {
+          listTools().catch(() => {});
+        }
+      });
+      domMutationObserver.observe(document.body, { childList: true, subtree: true });
+    } catch (e) {
+      console.debug('[WebMCP Inspector] Failed to set up form MutationObserver:', e);
+    }
+  }
+}
+
+async function executeDeclarativeForm(formElement, inputArgs, loadPromise) {
+  console.debug('[WebMCP Inspector] Executing declarative DOM form directly', formElement);
+
+  if (inputArgs && typeof inputArgs === 'object') {
+    for (const [key, val] of Object.entries(inputArgs)) {
+      const el = formElement.elements?.[key];
+      if (el) {
+        if (el.type === 'checkbox') {
+          el.checked = Boolean(val);
+        } else {
+          el.value = String(val ?? '');
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+  }
+
+  if (typeof formElement.requestSubmit === 'function') {
+    formElement.requestSubmit();
+  } else if (typeof formElement.submit === 'function') {
+    formElement.submit();
+  }
+
+  if (loadPromise) {
+    try {
+      await Promise.race([loadPromise, new Promise((resolve) => setTimeout(resolve, 2000))]);
     } catch {
       // best effort
     }
   }
 
-  toolsChangedCallback = () => {
-    console.debug('[WebMCP Inspector] Tools changed callback received');
-    listTools();
+  return {
+    success: true,
+    submitted: true,
+    toolName: formElement.getAttribute('toolname') || formElement.getAttribute('tool-name') || formElement.name
   };
-
-  try {
-    api.registerToolsChangedCallback(toolsChangedCallback);
-  } catch (error) {
-    console.debug('[WebMCP Inspector] Failed to register tools changed callback:', error.message);
-  }
 }
 
 async function executeTool(name, inputArgs) {
-  const api = getWebMCPAPI();
-  if (!api) {
-    throw new Error('WebMCP API not available');
-  }
-
-  if (typeof api.executeTool !== 'function') {
-    throw new Error('executeTool() is not available on this page API surface');
-  }
-
   const safeName = String(name || '');
   console.debug(`[WebMCP Inspector] Executing tool "${safeName}"`, inputArgs);
 
+  const api = getWebMCPAPI();
+
   let formElement = null;
   try {
-    formElement = document.querySelector(`form[toolname="${cssEscape(safeName)}"]`);
+    formElement = document.querySelector(
+      `form[toolname="${cssEscape(safeName)}"], form[tool-name="${cssEscape(safeName)}"]`
+    );
   } catch {
     formElement = null;
   }
   const formTarget = formElement?.target;
 
   let loadPromise = null;
-
   if (formTarget) {
     let targetFrame = null;
     try {
@@ -445,37 +666,76 @@ async function executeTool(name, inputArgs) {
     }
   }
 
+  // If no WebMCP API available, fall back to declarative DOM form execution if present
+  if (!api || typeof api.executeTool !== 'function') {
+    if (formElement) {
+      return executeDeclarativeForm(formElement, inputArgs, loadPromise);
+    }
+    throw new Error('executeTool() is not available on this page API surface');
+  }
+
+  const cachedEntry = lastDiscoveredToolsMap.get(safeName);
+  const rawTool = cachedEntry?.rawTool;
+
   let result;
-  try {
-    result = await api.executeTool(safeName, inputArgs);
-  } catch (error) {
-    if (typeof inputArgs === 'string') {
-      throw error;
-    }
+  let lastError = null;
 
-    // Some experimental API variants expect JSON string arguments.
-    if (!shouldRetryExecuteWithStringArgs(error)) {
-      throw error;
-    }
-
-    const stringArgs = JSON.stringify(inputArgs);
+  // Attempt 1: If rawTool is an object, pass it (W3C Spec: executeTool(RegisteredTool, inputObject))
+  if (rawTool && typeof rawTool === 'object') {
     try {
-      result = await api.executeTool(safeName, stringArgs);
-    } catch (stringModeError) {
-      if (!shouldRetryExecuteWithStringArgs(stringModeError)) {
-        throw stringModeError;
-      }
+      result = await api.executeTool(rawTool, inputArgs);
+      lastError = null;
+    } catch (err) {
+      lastError = err;
+    }
+  }
 
-      // Some builds accept a single invocation envelope argument.
+  // Attempt 2: Pass tool name string with inputArgs object
+  if (result === undefined && (!rawTool || lastError)) {
+    try {
+      result = await api.executeTool(safeName, inputArgs);
+      lastError = null;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  // Attempt 3: Retry with JSON string arguments if argument parse error indicated
+  if (result === undefined && lastError && typeof inputArgs !== 'string') {
+    if (shouldRetryExecuteWithStringArgs(lastError)) {
+      const stringArgs = JSON.stringify(inputArgs);
       try {
-        result = await api.executeTool({
-          name: safeName,
-          inputArgs: stringArgs
-        });
-      } catch {
-        throw stringModeError;
+        if (rawTool && typeof rawTool === 'object') {
+          result = await api.executeTool(rawTool, stringArgs);
+          lastError = null;
+        } else {
+          result = await api.executeTool(safeName, stringArgs);
+          lastError = null;
+        }
+      } catch (stringModeError) {
+        lastError = stringModeError;
+
+        // Attempt 4: Invocation envelope
+        try {
+          result = await api.executeTool({
+            name: safeName,
+            inputArgs: stringArgs
+          });
+          lastError = null;
+        } catch {
+          // fall through
+        }
       }
     }
+  }
+
+  // If API execution failed, but formElement exists in DOM, fallback to declarative form execution
+  if (result === undefined && lastError) {
+    if (formElement) {
+      console.debug('[WebMCP Inspector] api.executeTool failed; falling back to DOM form submission', lastError);
+      return executeDeclarativeForm(formElement, inputArgs, loadPromise);
+    }
+    throw lastError;
   }
 
   if (result === null) {
@@ -520,7 +780,7 @@ function handleRuntimeMessage(request, sender, reply) {
 
       switch (action) {
         case 'LIST_TOOLS': {
-          const result = listTools();
+          const result = await listTools();
           setupToolsChangedListener();
           safeReply(reply, toPlainSerializable(result));
           return;
@@ -601,6 +861,6 @@ window.addEventListener('toolcancel', (event) => {
 
 // Initial warm-up
 setupRuntimeListener();
-listTools();
+listTools().catch(() => {});
 setupToolsChangedListener();
 })();
