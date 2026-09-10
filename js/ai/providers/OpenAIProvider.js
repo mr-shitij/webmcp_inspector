@@ -3,7 +3,6 @@
  */
 
 import AIProvider from '../AIProvider.js';
-import { parseToolInputSchema } from '../utils/toolSchemas.js';
 
 class OpenAIProvider extends AIProvider {
   constructor(config) {
@@ -74,14 +73,34 @@ class OpenAIProvider extends AIProvider {
   }
 
   formatTools(tools) {
-    return tools.map((tool) => ({
+    return this.prepareTools(tools).map(({ providerName, description, schema }) => ({
       type: 'function',
       function: {
-        name: String(tool?.name || ''),
-        description: String(tool?.description || ''),
-        parameters: parseToolInputSchema(tool?.inputSchema)
+        name: providerName,
+        description,
+        parameters: schema
       }
     }));
+  }
+
+  formatMessages(messages) {
+    return messages.map((message) => {
+      if (message.role === 'assistant') {
+        const formatted = { role: 'assistant', content: message.content || null };
+        if (Array.isArray(message.toolCalls) && message.toolCalls.length) {
+          formatted.tool_calls = message.toolCalls.map((call) => ({
+            id: call.id,
+            type: 'function',
+            function: { name: call.providerName || call.name, arguments: JSON.stringify(call.args ?? {}) }
+          }));
+        }
+        return formatted;
+      }
+      if (message.role === 'tool') {
+        return { role: 'tool', tool_call_id: message.toolCallId, content: this.toolResultText(message) };
+      }
+      return { role: message.role === 'system' ? 'system' : 'user', content: String(message.content || '') };
+    });
   }
 
   getTokenParamForModel(modelId) {
@@ -100,7 +119,7 @@ class OpenAIProvider extends AIProvider {
   buildRequestBody(messages, tools = []) {
     const body = {
       model: this.config.model,
-      messages: messages
+      messages: this.formatMessages(messages)
     };
 
     const temperature = Number(this.config.temperature);
@@ -166,7 +185,7 @@ class OpenAIProvider extends AIProvider {
         continue;
       }
 
-      if (Object.prototype.hasOwnProperty.call(next, param)) {
+      if (param === 'temperature' && Object.prototype.hasOwnProperty.call(next, param)) {
         delete next[param];
         changed = true;
       }
@@ -175,19 +194,6 @@ class OpenAIProvider extends AIProvider {
     if (/temperature/i.test(message) && /not supported|unsupported/i.test(message) && next.temperature !== undefined) {
       delete next.temperature;
       changed = true;
-    }
-
-    if (/tool_choice/i.test(message) && /not supported|unsupported/i.test(message) && next.tool_choice !== undefined) {
-      delete next.tool_choice;
-      changed = true;
-    }
-
-    if (/tools?/i.test(message) && /not supported|unsupported/i.test(message)) {
-      if (next.tools !== undefined || next.tool_choice !== undefined) {
-        delete next.tools;
-        delete next.tool_choice;
-        changed = true;
-      }
     }
 
     if (changed) {
@@ -242,20 +248,16 @@ class OpenAIProvider extends AIProvider {
       return { error: 'No response from OpenAI' };
     }
 
-    const result = { text: message.content || '', functionCalls: [] };
+    const result = { text: message.content || '', toolCalls: [] };
 
     if (message.tool_calls) {
-      result.functionCalls = message.tool_calls.map(call => ({
-        name: call.function.name,
-        args: (() => {
-          try {
-            return JSON.parse(call.function.arguments || '{}');
-          } catch {
-            return {};
-          }
-        })()
-      }));
+      result.toolCalls = message.tool_calls.map((call) => {
+        const parsed = this.parseArguments(call.function?.arguments);
+        return { ...this.resolveToolCall(call.function?.name, call.id, parsed.args), parseError: parsed.parseError };
+      });
     }
+    result.functionCalls = result.toolCalls;
+    result.assistantMessage = { role: 'assistant', content: result.text, toolCalls: result.toolCalls };
 
     return result;
   }

@@ -8,9 +8,10 @@ WebMCP Inspector is a Chrome Extension for discovering, inspecting, executing, a
 
 ## Features
 
-- Detects WebMCP APIs on the active page (`document.modelContext` / `navigator.modelContextTesting` / `navigator.modelContext`)
-- Lists and categorizes imperative and declarative tools
-- Schema-aware manual tool execution with JSON input normalization
+- Uses the current `document.modelContext` draft API first and labels Chromium's `navigator.modelContextTesting` as a compatibility source
+- Discovers registered tools across explicitly enumerated secure iframe origins while retaining origin/frame identity
+- Shows declarative `form[toolname]` markup as diagnostics; only browser-registered tools can execute
+- Validates manual and AI arguments without rewriting them
 - AI-assisted tool usage with provider adapters:
   - Google Gemini
   - OpenAI
@@ -48,7 +49,7 @@ js/
   ai/AIManager.js                  # Provider orchestration
   ai/AIProvider.js                 # Provider base interface
   ai/providers/*.js                # Gemini/OpenAI/Anthropic/Ollama adapters
-  ai/utils/toolSchemas.js          # Tool schema parsing/normalization helpers
+  ai/utils/toolSchemas.js          # Provider-specific schema adaptation
 icons/
   logo-source.png                  # Source logo for icon generation
   generate_icons.js                # Generates icon16/32/48/128
@@ -86,7 +87,7 @@ npm run build
 
 ## WebMCP Prerequisite
 
-Enable WebMCP testing APIs in Chrome:
+WebMCP is an evolving Community Group draft, not a W3C Recommendation. In Chrome builds that still require it, enable:
 
 - `chrome://flags/#enable-webmcp-testing`
 
@@ -146,8 +147,12 @@ curl -i http://127.0.0.1:11434/api/tags
 ## Security Notes
 
 - Runs fully client-side as a browser extension.
-- API keys are stored in Chrome extension storage.
-- Tool execution uses active tab context and WebMCP APIs exposed by the page/browser build.
+- Provider preferences sync through Chrome. API keys are stored separately in `chrome.storage.local`, are not synced, and are omitted from exports. Chrome extension storage is not encrypted; use restricted development keys.
+- Page tool metadata and results are treated as untrusted content before being sent to an AI provider.
+- Consequential tools require explicit confirmation, including AI-requested executions.
+- Execution is bound to the exact discovered tool ID, page URL, and active tab.
+- Ollama connections are restricted to loopback URLs. Anthropic uses its explicitly dangerous direct-browser header; understand that tradeoff before saving a key.
+- Host access is limited to HTTPS pages plus loopback HTTP development pages, matching WebMCP's secure-context requirement. Chrome restricted pages and remote plain-HTTP pages are excluded.
 
 ## Contributing
 

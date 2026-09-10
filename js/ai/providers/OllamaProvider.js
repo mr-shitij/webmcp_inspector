@@ -3,7 +3,6 @@
  */
 
 import AIProvider from '../AIProvider.js';
-import { parseToolInputSchema } from '../utils/toolSchemas.js';
 
 class OllamaProvider extends AIProvider {
   constructor(config) {
@@ -13,11 +12,16 @@ class OllamaProvider extends AIProvider {
   }
 
   getBaseUrl() {
-    return String(this.config.serverUrl || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+    const parsed = new URL(String(this.config.serverUrl || 'http://127.0.0.1:11434'));
+    const loopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1' || parsed.hostname === '[::1]';
+    if (!loopback || !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      throw new Error('Ollama Server URL must be an http(s) loopback address (localhost, 127.0.0.1, or ::1).');
+    }
+    return parsed.href.replace(/\/+$/, '');
   }
 
   isConfigured() {
-    return !!this.config.serverUrl && !!this.config.model;
+    try { this.getBaseUrl(); return !!this.config.model; } catch { return false; }
   }
 
   async readErrorMessage(response, fallback) {
@@ -53,7 +57,9 @@ class OllamaProvider extends AIProvider {
     const raw = String(error?.message || error || 'Unknown network error');
     if (/failed to fetch|networkerror|load failed/i.test(raw)) {
       const suffix = endpoint ? ` (${endpoint})` : '';
-      return `Failed to reach Ollama at ${this.getBaseUrl()}${suffix}. Start the server with 'ollama serve', verify the URL in Settings, and retry.`;
+      let baseUrl = 'the configured loopback URL';
+      try { baseUrl = this.getBaseUrl(); } catch {}
+      return `Failed to reach Ollama at ${baseUrl}${suffix}. Start the server with 'ollama serve', verify the URL in Settings, and retry.`;
     }
     return raw;
   }
@@ -104,15 +110,34 @@ class OllamaProvider extends AIProvider {
   }
 
   formatTools(tools) {
-    // Ollama tool format (similar to OpenAI)
-    return tools.map((tool) => ({
+    return this.prepareTools(tools).map(({ providerName, description, schema }) => ({
       type: 'function',
       function: {
-        name: String(tool?.name || ''),
-        description: String(tool?.description || ''),
-        parameters: parseToolInputSchema(tool?.inputSchema)
+        name: providerName,
+        description,
+        parameters: schema
       }
     }));
+  }
+
+  formatMessages(messages) {
+    return messages.map((message) => {
+      if (message.role === 'assistant') {
+        const formatted = { role: 'assistant', content: message.content || '' };
+        if (message.toolCalls?.length) formatted.tool_calls = message.toolCalls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: { name: call.providerName || call.name, arguments: call.args || {} }
+        }));
+        return formatted;
+      }
+      if (message.role === 'tool') return {
+        role: 'tool',
+        content: this.toolResultText(message),
+        tool_name: message.providerName || message.name
+      };
+      return { role: message.role === 'system' ? 'system' : 'user', content: String(message.content || '') };
+    });
   }
 
   async sendMessage(messages, tools = []) {
@@ -121,15 +146,9 @@ class OllamaProvider extends AIProvider {
         return { error: 'No model selected. Please configure Ollama settings.' };
       }
 
-      // Format messages for Ollama
-      const formattedMessages = messages.map(m => ({
-        role: m.role === 'assistant' ? 'assistant' : 'user',
-        content: m.content
-      }));
-
       const body = {
         model: this.config.model,
-        messages: formattedMessages,
+        messages: this.formatMessages(messages),
         stream: false,
         options: {
           temperature: this.config.temperature,
@@ -165,16 +184,17 @@ class OllamaProvider extends AIProvider {
       return { error: 'No response from Ollama' };
     }
 
-    const result = { text: message.content || '', functionCalls: [] };
+    const result = { text: message.content || '', toolCalls: [] };
 
     // Ollama may return tool calls in different formats depending on version
     if (message.tool_calls) {
-      result.functionCalls = message.tool_calls.map(call => ({
-        name: call.function?.name || call.name,
-        args: call.function?.arguments || call.arguments || {}
-      }));
+      result.toolCalls = message.tool_calls.map((call) => {
+        const parsed = this.parseArguments(call.function?.arguments || call.arguments || {});
+        return { ...this.resolveToolCall(call.function?.name || call.name, call.id, parsed.args), parseError: parsed.parseError };
+      });
     }
-
+    result.functionCalls = result.toolCalls;
+    result.assistantMessage = { role: 'assistant', content: result.text, toolCalls: result.toolCalls };
     return result;
   }
 

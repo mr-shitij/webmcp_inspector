@@ -4,217 +4,270 @@ import { join } from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
-import GeminiProvider from '../js/ai/providers/GeminiProvider.js';
-import AnthropicProvider from '../js/ai/providers/AnthropicProvider.js';
-
-function createMockContentEnv(options = {}) {
+function createEnvironment(options = {}) {
   const sentMessages = [];
-  const registeredListeners = [];
-
-  const mockChrome = {
-    runtime: {
-      sendMessage: async (msg) => {
-        sentMessages.push(msg);
-      },
-      onMessage: {
-        addListener: (listener) => {
-          registeredListeners.push(listener);
-        }
-      }
-    }
-  };
-
-  const mockDocument = {
+  const listeners = [];
+  let mutationCallback = null;
+  const mockWindow = { __webmcpInspectorInjected: false, addEventListener() {}, frames: [] };
+  mockWindow.frames = options.frames || [];
+  mockWindow.top = options.topFrame === false ? {} : mockWindow;
+  const document = {
     modelContext: options.documentModelContext || null,
-    querySelector: options.querySelector || (() => null),
+    documentElement: options.observeMutations ? {} : null,
     querySelectorAll: options.querySelectorAll || (() => [])
   };
-
-  const mockNavigator = {
-    modelContextTesting: options.navigatorModelContextTesting || null,
-    modelContext: options.navigatorModelContext || null
-  };
-
-  const mockWindow = {
-    __webmcpInspectorInjected: false,
-    top: options.isTopFrame !== false ? null : { different: true },
-    addEventListener: () => {}
-  };
-  if (options.isTopFrame !== false) {
-    mockWindow.top = mockWindow;
+  class MockMutationObserver {
+    constructor(callback) { mutationCallback = callback; }
+    observe() {}
   }
-
   const context = vm.createContext({
     window: mockWindow,
-    document: mockDocument,
-    navigator: mockNavigator,
-    chrome: mockChrome,
+    document,
+    navigator: {
+      modelContextTesting: options.testingModelContext || null
+    },
+    chrome: {
+      runtime: {
+        sendMessage: async (message) => sentMessages.push(message),
+        onMessage: { addListener: (listener) => listeners.push(listener) }
+      }
+    },
     console,
+    URL,
+    location: { href: 'https://example.com/page', origin: 'https://example.com' },
     Date,
-    String,
-    Array,
-    Object,
+    Math,
     JSON,
     Promise,
+    setTimeout,
+    clearTimeout,
+    MutationObserver: options.observeMutations ? MockMutationObserver : undefined,
     WeakSet,
     Set,
-    Map,
-    Event: class { constructor(type) { this.type = type; } },
-    location: { href: 'https://example.com/page' },
-    setTimeout,
-    clearTimeout
+    Map
   });
-
-  const code = readFileSync(join(process.cwd(), 'content.js'), 'utf8');
-  vm.runInContext(code, context, { filename: 'content.js' });
-
-  return { context, sentMessages, registeredListeners };
+  vm.runInContext(readFileSync(join(process.cwd(), 'content.js'), 'utf8'), context, { filename: 'content.js' });
+  return { listeners, sentMessages, triggerMutations: (mutations) => mutationCallback?.(mutations) };
 }
 
-test('content.js discovers tools via modern document.modelContext.getTools()', async () => {
-  const mockTools = [
-    {
-      name: 'addNumbers',
-      description: 'Adds two numbers together',
-      inputSchema: {
-        type: 'object',
-        properties: { a: { type: 'number' }, b: { type: 'number' } }
-      }
-    }
-  ];
+function send(listener, message) {
+  return new Promise((resolve) => listener(message, {}, resolve));
+}
 
-  const env = createMockContentEnv({
-    documentModelContext: {
-      getTools: async () => mockTools,
-      addEventListener: () => {}
-    }
-  });
+function plain(value) { return JSON.parse(JSON.stringify(value)); }
 
-  assert.equal(env.registeredListeners.length, 1);
-  const messageHandler = env.registeredListeners[0];
-
-  const response = await new Promise((resolve) => {
-    messageHandler({ action: 'LIST_TOOLS' }, {}, resolve);
-  });
-
-  assert.equal(response.success, true);
-  assert.equal(response.api, 'document.modelContext');
-  assert.equal(response.tools.length, 1);
-  assert.equal(response.tools[0].name, 'addNumbers');
-  assert.equal(response.tools[0].description, 'Adds two numbers together');
-});
-
-test('content.js falls back to legacy navigator.modelContextTesting.listTools()', async () => {
-  const mockLegacyTools = [
-    {
-      name: 'legacySearch',
-      description: 'Legacy search tool',
-      inputSchema: '{"type":"object","properties":{"q":{"type":"string"}}}'
-    }
-  ];
-
-  const env = createMockContentEnv({
-    navigatorModelContextTesting: {
-      listTools: () => mockLegacyTools,
-      registerToolsChangedCallback: () => {}
-    }
-  });
-
-  const messageHandler = env.registeredListeners[0];
-  const response = await new Promise((resolve) => {
-    messageHandler({ action: 'LIST_TOOLS' }, {}, resolve);
-  });
-
-  assert.equal(response.success, true);
-  assert.equal(response.api, 'testing');
-  assert.equal(response.tools.length, 1);
-  assert.equal(response.tools[0].name, 'legacySearch');
-  assert.equal(response.tools[0].inputSchema.type, 'object');
-});
-
-test('content.js scans DOM for declarative forms as fallback or complement', async () => {
-  const mockForm = {
-    getAttribute: (attr) => {
-      if (attr === 'toolname') return 'powerCalc';
-      if (attr === 'tooldescription') return 'Calculates power of 2';
-      return null;
+test('standards discovery passes allowed descendant origins and retains identity metadata', async () => {
+  const getToolsCalls = [];
+  const api = {
+    getTools: async (options) => {
+      getToolsCalls.push(options);
+      return [{ name: 'search.flights', title: 'Flight search', description: 'Search', inputSchema: { type: 'object' }, origin: 'https://example.com' }];
     },
-    elements: [
-      {
-        getAttribute: (attr) => (attr === 'toolparamname' ? 'base' : null),
-        name: 'base',
-        tagName: 'INPUT',
-        type: 'number',
-        required: true
-      }
-    ]
+    executeTool: async () => null,
+    addEventListener() {}
   };
+  const env = createEnvironment({ documentModelContext: api });
+  const response = await send(env.listeners[0], { action: 'LIST_TOOLS', fromOrigins: ['https://widget.example', 'http://insecure.example'] });
+  assert.equal(response.success, true);
+  assert.deepEqual(plain(getToolsCalls), [{ fromOrigins: ['https://widget.example'] }]);
+  assert.equal(response.apis[0].flavor, 'document.modelContext');
+  assert.equal(response.apis[0].standard, true);
+  assert.equal(response.tools[0].name, 'search.flights');
+  assert.equal(response.tools[0].origin, 'https://example.com');
+  assert.equal(response.tools[0].framePath, 'top');
+  assert.match(response.tools[0].id, /^document\.modelContext\|/);
+});
 
-  const env = createMockContentEnv({
-    documentModelContext: null,
-    navigatorModelContextTesting: null,
-    querySelectorAll: (selector) => {
-      if (selector.includes('form[toolname]')) return [mockForm];
-      return [];
+test('testing compatibility tools complement but do not shadow standard tools', async () => {
+  const env = createEnvironment({
+    documentModelContext: { getTools: async () => [{ name: 'same', inputSchema: {} }], executeTool() {}, addEventListener() {} },
+    testingModelContext: { listTools: async () => [{ name: 'same', inputSchema: '{}' }, { name: 'compat-only', inputSchema: '{}' }], executeTool() {} }
+  });
+  const response = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  assert.deepEqual(plain(response.tools.map((tool) => tool.name)), ['same', 'compat-only']);
+  assert.equal(response.tools[0].standardsCompliant, true);
+  assert.equal(response.tools[1].apiFlavor, 'navigator.modelContextTesting');
+  assert.equal(response.apis.length, 2);
+});
+
+test('testing compatibility execution uses exact selected identity and JSON-string arguments', async () => {
+  const calls = [];
+  const env = createEnvironment({
+    testingModelContext: {
+      listTools: () => [{ name: 'searchFlights', inputSchema: '{}' }],
+      executeTool: async (...args) => { calls.push(args); return 'ok'; }
     }
   });
-
-  const messageHandler = env.registeredListeners[0];
-  const response = await new Promise((resolve) => {
-    messageHandler({ action: 'LIST_TOOLS' }, {}, resolve);
-  });
-
+  const listed = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  const response = await send(env.listeners[0], { action: 'EXECUTE_TOOL', toolId: listed.tools[0].id, inputArgs: { origin: 'LON' }, pageInstanceId: listed.pageInstanceId });
   assert.equal(response.success, true);
+  assert.deepEqual(plain(calls), [['searchFlights', '{"origin":"LON"}']]);
+});
+
+test('standards execution passes the RegisteredTool object and does not fall back by name', async () => {
+  const rawTool = { name: 'calculate', inputSchema: { type: 'object' } };
+  const calls = [];
+  const env = createEnvironment({
+    documentModelContext: {
+      getTools: async () => [rawTool],
+      executeTool: async (...args) => { calls.push(args); return { answer: 42 }; }
+    }
+  });
+  const listed = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  const input = { x: 2 };
+  const response = await send(env.listeners[0], { action: 'EXECUTE_TOOL', toolId: listed.tools[0].id, inputArgs: input, pageInstanceId: listed.pageInstanceId });
+  assert.equal(response.success, true);
+  assert.equal(calls[0][0], rawTool);
+  assert.deepEqual(plain(calls[0][1]), input);
+});
+
+test('same-named tools in different frames receive distinct executable identities', async () => {
+  const child = { frames: [] };
+  const env = createEnvironment({
+    frames: [child],
+    documentModelContext: {
+      getTools: async () => [
+        { name: 'save', origin: 'https://example.com', inputSchema: {} },
+        { name: 'save', origin: 'https://widget.example', window: child, inputSchema: {} }
+      ],
+      executeTool() {}
+    }
+  });
+  const listed = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  assert.equal(listed.tools[0].framePath, 'top');
+  assert.equal(listed.tools[1].framePath, 'top.0');
+  assert.notEqual(listed.tools[0].id, listed.tools[1].id);
+});
+
+test('standards execution retries with JSON only for a browser string-contract mismatch', async () => {
+  const calls = [];
+  const rawTool = { name: 'string-contract-browser', inputSchema: {} };
+  const env = createEnvironment({
+    documentModelContext: {
+      getTools: async () => [rawTool],
+      executeTool: async (...args) => {
+        calls.push(args);
+        if (typeof args[1] !== 'string') throw new TypeError("parameter 2 is not of type 'DOMString'");
+        return 'ok';
+      }
+    }
+  });
+  const listed = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  const response = await send(env.listeners[0], { action: 'EXECUTE_TOOL', toolId: listed.tools[0].id, inputArgs: { value: 1 }, pageInstanceId: listed.pageInstanceId });
+  assert.equal(response.success, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1], '{"value":1}');
+});
+
+test('standards execution handles Chromium UnknownError for object arguments', async () => {
+  const calls = [];
+  const rawTool = { name: 'searchFlights', inputSchema: { type: 'object' } };
+  const env = createEnvironment({
+    documentModelContext: {
+      getTools: async () => [rawTool],
+      executeTool: async (...args) => {
+        calls.push(args);
+        if (typeof args[1] !== 'string') {
+          const error = new Error('Failed to parse input arguments');
+          error.name = 'UnknownError';
+          throw error;
+        }
+        return '{"flights":[]}';
+      }
+    }
+  });
+  const listed = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  const response = await send(env.listeners[0], {
+    action: 'EXECUTE_TOOL',
+    toolId: listed.tools[0].id,
+    inputArgs: { origin: 'SFO', destination: 'LAX' },
+    pageInstanceId: listed.pageInstanceId
+  });
+  assert.equal(response.success, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1], '{"origin":"SFO","destination":"LAX"}');
+});
+
+test('invalid schemas are reported and made non-executable', async () => {
+  const env = createEnvironment({
+    testingModelContext: { listTools: () => [{ name: 'broken', inputSchema: '{bad' }], executeTool() {} }
+  });
+  const listed = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  assert.equal(listed.tools[0].inputSchema, null);
+  assert.match(listed.tools[0].schemaError, /Invalid JSON inputSchema/);
+  assert.equal(listed.tools[0].executable, false);
+  const response = await send(env.listeners[0], { action: 'EXECUTE_TOOL', toolId: listed.tools[0].id, inputArgs: {}, pageInstanceId: listed.pageInstanceId });
+  assert.equal(response.success, false);
+});
+
+test('execution rejects a RegisteredTool cached by a previous document', async () => {
+  const env = createEnvironment({
+    documentModelContext: { getTools: async () => [{ name: 'save', inputSchema: {} }], executeTool() {} }
+  });
+  const listed = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  const response = await send(env.listeners[0], {
+    action: 'EXECUTE_TOOL',
+    toolId: listed.tools[0].id,
+    inputArgs: {},
+    pageInstanceId: 'previous-document'
+  });
+  assert.equal(response.success, false);
+  assert.match(response.error, /document changed since discovery/i);
+});
+
+test('declarative markup is returned separately as non-executable diagnostics', async () => {
+  const form = {
+    getAttribute: (name) => ({ toolname: 'powerCalc', tooldescription: 'Power' }[name] || null),
+    hasAttribute: (name) => name === 'toolautosubmit',
+    elements: [{ name: 'base', tagName: 'INPUT', type: 'number', required: true, getAttribute: () => null }]
+  };
+  const env = createEnvironment({ querySelectorAll: () => [form] });
+  const response = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  assert.equal(response.tools.length, 0);
+  assert.equal(response.declarativeDiagnostics.length, 1);
+  assert.equal(response.declarativeDiagnostics[0].executable, false);
+  assert.equal(response.declarativeDiagnostics[0].autoSubmit, true);
+});
+
+test('browser-exposed declarative tools are executable and are not duplicated by diagnostics', async () => {
+  const form = {
+    getAttribute: (name) => ({ toolname: 'search_location', tooldescription: 'Search' }[name] || null),
+    hasAttribute: () => true,
+    elements: []
+  };
+  const env = createEnvironment({
+    documentModelContext: {
+      getTools: async () => [{ name: 'search_location', description: 'Search', inputSchema: {}, origin: 'https://example.com' }],
+      executeTool() {}
+    },
+    querySelectorAll: () => [form]
+  });
+  const response = await send(env.listeners[0], { action: 'LIST_TOOLS' });
   assert.equal(response.tools.length, 1);
-  assert.equal(response.tools[0].name, 'powerCalc');
   assert.equal(response.tools[0].type, 'declarative');
-  assert.equal(response.tools[0].inputSchema.properties.base.type, 'number');
-  assert.deepEqual(JSON.parse(JSON.stringify(response.tools[0].inputSchema.required)), ['base']);
+  assert.equal(response.tools[0].executable, true);
+  assert.equal(response.declarativeDiagnostics.length, 0);
 });
 
-test('GeminiProvider coalesces consecutive user or model turns to satisfy Gemini API requirements', () => {
-  const provider = new GeminiProvider({ apiKey: 'test-key', model: 'gemini-2.5-flash' });
+test('DOM observer ignores unrelated app rendering and debounces declarative changes', async () => {
+  const env = createEnvironment({ observeMutations: true });
+  const initialMessages = env.sentMessages.length;
+  const unrelated = { matches: () => false, closest: () => null };
+  env.triggerMutations([{ type: 'childList', target: unrelated, addedNodes: [], removedNodes: [] }]);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(env.sentMessages.length, initialMessages);
 
-  const inputMessages = [
-    { role: 'user', content: 'What tools are available?' },
-    { role: 'user', content: 'Also can you calculate something?' },
-    { role: 'assistant', content: 'I found calcTool.' },
-    { role: 'assistant', content: 'Let me run it for you.' },
-    { role: 'user', content: 'Tool results: result = 42' }
-  ];
-
-  const formatted = provider.formatMessages(inputMessages);
-
-  // Consecutive user turns must be merged into 1 user turn with multiple parts
-  // Consecutive assistant turns must be merged into 1 model turn with multiple parts
-  assert.equal(formatted.length, 3);
-  assert.equal(formatted[0].role, 'user');
-  assert.equal(formatted[0].parts.length, 2);
-  assert.equal(formatted[0].parts[0].text, 'What tools are available?');
-  assert.equal(formatted[0].parts[1].text, 'Also can you calculate something?');
-
-  assert.equal(formatted[1].role, 'model');
-  assert.equal(formatted[1].parts.length, 2);
-
-  assert.equal(formatted[2].role, 'user');
-  assert.equal(formatted[2].parts.length, 1);
+  const formControl = { matches: () => false, closest: () => ({}) };
+  env.triggerMutations([{ type: 'attributes', target: formControl, attributeName: 'required' }]);
+  env.triggerMutations([{ type: 'attributes', target: formControl, attributeName: 'required' }]);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(env.sentMessages.length, initialMessages + 1);
+  assert.equal(env.sentMessages.at(-1).type, 'TOOLS_CHANGED');
 });
 
-test('AnthropicProvider coalesces consecutive turns to prevent roles must alternate error', () => {
-  const provider = new AnthropicProvider({ apiKey: 'test-key', model: 'claude-sonnet-4-20250514' });
-
-  const inputMessages = [
-    { role: 'user', content: 'First message' },
-    { role: 'user', content: 'Second message' },
-    { role: 'assistant', content: '[Calling tool: search]' },
-    { role: 'user', content: 'Tool call results: found 1 item' }
-  ];
-
-  const result = provider.formatMessages(inputMessages);
-
-  assert.equal(result.messages.length, 3);
-  assert.equal(result.messages[0].role, 'user');
-  assert.equal(result.messages[0].content, 'First message\n\nSecond message');
-  assert.equal(result.messages[1].role, 'assistant');
-  assert.equal(result.messages[2].role, 'user');
+test('non-top-frame bridge refuses authoritative discovery', async () => {
+  const env = createEnvironment({ topFrame: false, testingModelContext: { listTools: () => [{ name: 'child' }] } });
+  const response = await send(env.listeners[0], { action: 'LIST_TOOLS' });
+  assert.equal(response.ignored, 'non-top-frame');
+  assert.equal(response.tools.length, 0);
 });

@@ -2,11 +2,16 @@
  * WebMCP Inspector - Main Module Exports
  */
 
+import settingsManager from './settings/SettingsManager.js';
+import aiManager from './ai/AIManager.js';
+
 // Settings
-export { default as settingsManager, SettingsManager, DEFAULT_SETTINGS } from './settings/SettingsManager.js';
+export { settingsManager };
+export { SettingsManager, DEFAULT_SETTINGS } from './settings/SettingsManager.js';
 
 // AI
-export { default as aiManager, AIManager } from './ai/AIManager.js';
+export { aiManager };
+export { AIManager } from './ai/AIManager.js';
 export { default as AIProvider } from './ai/AIProvider.js';
 export { default as GeminiProvider } from './ai/providers/GeminiProvider.js';
 export { default as OpenAIProvider } from './ai/providers/OpenAIProvider.js';

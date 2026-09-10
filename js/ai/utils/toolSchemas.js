@@ -26,9 +26,10 @@ export function parseToolInputSchema(rawSchema) {
   if (typeof rawSchema === 'string') {
     try {
       const parsed = JSON.parse(rawSchema);
-      return isPlainObject(parsed) ? parsed : { ...DEFAULT_SCHEMA };
-    } catch {
-      return { ...DEFAULT_SCHEMA };
+      if (!isPlainObject(parsed)) throw new TypeError('inputSchema must be a JSON object');
+      return parsed;
+    } catch (error) {
+      throw new TypeError(`Invalid inputSchema: ${error.message}`);
     }
   }
 
@@ -36,7 +37,7 @@ export function parseToolInputSchema(rawSchema) {
     return rawSchema;
   }
 
-  return { ...DEFAULT_SCHEMA };
+  throw new TypeError('inputSchema must be a JSON object');
 }
 
 function pickNonNullType(schemaType) {
@@ -69,6 +70,14 @@ function normalizeGeminiSchema(schema) {
   if (typeof parsed.description === 'string' && parsed.description.trim()) {
     out.description = parsed.description.trim();
   }
+
+  for (const keyword of ['format', 'pattern', 'nullable', 'minLength', 'maxLength', 'minimum', 'maximum', 'minItems', 'maxItems']) {
+    if (parsed[keyword] !== undefined) out[keyword] = parsed[keyword];
+  }
+
+  if (Object.prototype.hasOwnProperty.call(parsed, 'default')) out.default = parsed.default;
+  const alternatives = Array.isArray(parsed.anyOf) ? parsed.anyOf : Array.isArray(parsed.oneOf) ? parsed.oneOf : null;
+  if (alternatives) out.anyOf = alternatives.map((candidate) => normalizeGeminiSchema(candidate));
 
   if (Array.isArray(parsed.enum) && parsed.enum.length > 0) {
     const filtered = parsed.enum.filter(

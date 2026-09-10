@@ -3,7 +3,10 @@
  * Manages all extension settings including AI providers
  */
 
-const SETTINGS_KEY = 'webmcp_settings_v1';
+const SETTINGS_KEY = 'webmcp_settings_v2';
+const LEGACY_SETTINGS_KEY = 'webmcp_settings_v1';
+const SECRETS_KEY = 'webmcp_provider_secrets_v1';
+const BLOCKED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_MODELS_PER_PROVIDER = {
   openai: 20,
   default: 40
@@ -13,11 +16,9 @@ const MAX_MODEL_DESCRIPTION_LENGTH = 140;
 
 // Default settings
 const DEFAULT_SETTINGS = {
-  version: '1.0.0',
+  version: '2.0.0',
   general: {
     theme: 'system',
-    autoOpen: true,
-    notifications: true,
     language: 'en'
   },
   ai: {
@@ -110,8 +111,19 @@ class SettingsManager {
 
   async init() {
     try {
-      const stored = await chrome.storage.sync.get(SETTINGS_KEY);
-      this.settings = this.mergeWithDefaults(stored[SETTINGS_KEY] || {});
+      const [stored, local] = await Promise.all([
+        chrome.storage.sync.get([SETTINGS_KEY, LEGACY_SETTINGS_KEY]),
+        chrome.storage.local.get(SECRETS_KEY)
+      ]);
+      const raw = stored[SETTINGS_KEY] || stored[LEGACY_SETTINGS_KEY] || {};
+      this.settings = this.mergeWithDefaults(raw);
+      const secrets = local[SECRETS_KEY] || {};
+      for (const [providerId, apiKey] of Object.entries(secrets)) {
+        if (!BLOCKED_KEYS.has(providerId) && typeof apiKey === 'string' && this.settings.ai?.providers?.[providerId]) {
+          this.settings.ai.providers[providerId].config.apiKey = apiKey;
+        }
+      }
+      if (stored[LEGACY_SETTINGS_KEY] && !stored[SETTINGS_KEY]) await this.save();
     } catch (error) {
       console.warn('[SettingsManager] Failed reading sync storage, using defaults:', error);
       this.settings = this.mergeWithDefaults({});
@@ -132,7 +144,9 @@ class SettingsManager {
 
   deepMerge(target, source) {
     const result = { ...target };
-    for (const key in source) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return result;
+    for (const key of Object.keys(source)) {
+      if (BLOCKED_KEYS.has(key)) continue;
       if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
         result[key] = this.deepMerge(target[key] || {}, source[key]);
       } else {
@@ -161,6 +175,7 @@ class SettingsManager {
   async set(path, value) {
     this.ensureSettings();
     const keys = path.split('.');
+    if (keys.some((key) => BLOCKED_KEYS.has(key))) throw new Error('Unsafe settings path');
     let target = this.settings;
     for (let i = 0; i < keys.length - 1; i++) {
       if (!target[keys[i]]) target[keys[i]] = {};
@@ -220,15 +235,6 @@ class SettingsManager {
       .map(([id, config]) => ({ id, ...config }));
   }
 
-  isQuotaError(error) {
-    const message = String(error?.message || error || '').toLowerCase();
-    return (
-      message.includes('quota') ||
-      message.includes('kquotabytesperitem') ||
-      message.includes('max write operations')
-    );
-  }
-
   compactSettingsForSync(settings) {
     const next = JSON.parse(JSON.stringify(settings || {}));
     const providers = next?.ai?.providers;
@@ -269,26 +275,18 @@ class SettingsManager {
 
   async save() {
     this.ensureSettings();
-
-    try {
-      await chrome.storage.sync.set({ [SETTINGS_KEY]: this.settings });
-      return;
-    } catch (error) {
-      if (!this.isQuotaError(error)) {
-        throw error;
-      }
-    }
-
     const compacted = this.compactSettingsForSync(this.settings);
-    this.settings = compacted;
-
-    try {
-      await chrome.storage.sync.set({ [SETTINGS_KEY]: compacted });
-    } catch (error) {
-      throw new Error(
-        `Failed to persist settings after quota compaction: ${String(error?.message || error)}`
-      );
+    const syncSettings = JSON.parse(JSON.stringify(compacted));
+    const secrets = {};
+    for (const [providerId, provider] of Object.entries(syncSettings.ai?.providers || {})) {
+      if (typeof provider?.config?.apiKey === 'string' && provider.config.apiKey) secrets[providerId] = provider.config.apiKey;
+      if (provider?.config) delete provider.config.apiKey;
     }
+    await Promise.all([
+      chrome.storage.sync.set({ [SETTINGS_KEY]: syncSettings }),
+      chrome.storage.local.set({ [SECRETS_KEY]: secrets })
+    ]);
+    await chrome.storage.sync.remove?.(LEGACY_SETTINGS_KEY);
   }
 
   async reset() {
@@ -299,7 +297,11 @@ class SettingsManager {
   }
 
   export() {
-    return JSON.stringify(this.settings, null, 2);
+    const exported = JSON.parse(JSON.stringify(this.settings));
+    for (const provider of Object.values(exported.ai?.providers || {})) {
+      if (provider?.config) delete provider.config.apiKey;
+    }
+    return JSON.stringify(exported, null, 2);
   }
 
   async import(jsonString) {

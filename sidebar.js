@@ -17,7 +17,10 @@ const PROVIDER_COLORS = {
 class SidePanelApp {
   constructor() {
     this.tools = [];
+    this.declarativeDiagnostics = [];
+    this.apis = [];
     this.selectedTool = null;
+    this.currentTabId = null;
     this.currentUrl = '';
     this.aiMessages = [];
     this.trace = [];
@@ -62,8 +65,6 @@ class SidePanelApp {
       aiCopyTraceBtn: document.getElementById('aiCopyTraceBtn'),
 
       settingTheme: document.getElementById('settingTheme'),
-      settingAutoOpen: document.getElementById('settingAutoOpen'),
-      settingNotifications: document.getElementById('settingNotifications'),
       saveGeneralSettingsBtn: document.getElementById('saveGeneralSettingsBtn'),
 
       providerCards: document.getElementById('providerCards'),
@@ -93,6 +94,15 @@ class SidePanelApp {
     this.bindEvents();
     this.setActiveTab('tools');
 
+    // Prevent MV3 service worker suspension while the sidebar is open.
+    // Chrome suspends after ~30 s of inactivity; pinging every 25 s keeps it alive.
+    this._keepaliveTimer = setInterval(() => {
+      chrome.runtime.sendMessage({ type: 'KEEPALIVE' }).catch(() => {});
+    }, 25_000);
+    window.addEventListener('beforeunload', () => {
+      if (this._keepaliveTimer) clearInterval(this._keepaliveTimer);
+    });
+
     await settingsManager.init();
     await aiManager.init();
 
@@ -111,7 +121,7 @@ class SidePanelApp {
     // If popup requested a specific tool, select it.
     const { selectedTool } = await chrome.storage.local.get(['selectedTool']);
     if (selectedTool) {
-      this.selectToolByName(selectedTool);
+      this.selectToolById(selectedTool);
       await chrome.storage.local.remove('selectedTool');
     }
   }
@@ -187,7 +197,7 @@ class SidePanelApp {
     chrome.runtime.onMessage.addListener((message) => {
       switch (message.type) {
         case 'TOOLS_UPDATE':
-          this.handleToolsUpdate(message.tools || [], message.url || '');
+          this.handleToolsUpdate(message);
           break;
         case 'STATUS_UPDATE':
           this.showStatus(message.message || '', message.messageType || 'info', 4000);
@@ -259,7 +269,7 @@ class SidePanelApp {
       });
 
       if (response?.error) {
-        this.handleToolsUpdate([], response.url || '');
+        this.handleToolsUpdate(response);
         this.setContext(response.url || '', false);
         this.showStatus(response.error, 'warning', 5000);
         return;
@@ -267,24 +277,30 @@ class SidePanelApp {
 
       const tools = Array.isArray(response?.tools) ? response.tools : [];
       const url = response?.url || '';
-      this.handleToolsUpdate(tools, url);
-      this.showStatus(`Loaded ${tools.length} tool${tools.length === 1 ? '' : 's'}`, 'success', 2500);
+      this.handleToolsUpdate(response);
+      const warning = Array.isArray(response?.warnings) && response.warnings.length ? ` (${response.warnings.join('; ')})` : '';
+      this.showStatus(`Loaded ${tools.length} registered tool${tools.length === 1 ? '' : 's'}${warning}`, warning ? 'warning' : 'success', warning ? 6000 : 2500);
     } catch (error) {
       this.showStatus(`Failed to load tools: ${error.message}`, 'error', 6000);
     }
   }
 
-  handleToolsUpdate(tools, url) {
+  handleToolsUpdate(snapshot) {
+    const tools = Array.isArray(snapshot?.tools) ? snapshot.tools : [];
+    const url = snapshot?.url || '';
+    this.currentTabId = Number.isInteger(snapshot?.tabId) ? snapshot.tabId : this.currentTabId;
     this.tools = tools;
+    this.declarativeDiagnostics = Array.isArray(snapshot?.declarativeDiagnostics) ? snapshot.declarativeDiagnostics : [];
+    this.apis = Array.isArray(snapshot?.apis) ? snapshot.apis : [];
     this.dom.tabToolCount.textContent = String(tools.length);
-    this.setContext(url, tools.length > 0);
+    this.setContext(url, Boolean(snapshot?.apiAvailable));
 
     this.renderToolLists();
 
     if (!this.selectedTool && tools.length > 0) {
       this.selectTool(tools[0]);
     } else if (this.selectedTool) {
-      const updated = tools.find((tool) => tool.name === this.selectedTool.name);
+      const updated = [...tools, ...this.declarativeDiagnostics].find((tool) => tool.id === this.selectedTool.id);
       if (updated) {
         this.selectTool(updated);
       } else {
@@ -302,7 +318,7 @@ class SidePanelApp {
     this.dom.declarativeToolList.innerHTML = '';
 
     const query = this.dom.toolSearchInput.value.trim().toLowerCase();
-    const filtered = this.tools.filter((tool) => {
+    const filtered = [...this.tools, ...this.declarativeDiagnostics].filter((tool) => {
       if (!query) return true;
       const haystack = `${tool.name || ''} ${tool.description || ''}`.toLowerCase();
       return haystack.includes(query);
@@ -331,7 +347,7 @@ class SidePanelApp {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'tool-item';
-      button.classList.toggle('active', this.selectedTool?.name === tool.name);
+      button.classList.toggle('active', this.selectedTool?.id === tool.id);
 
       const name = document.createElement('div');
       name.className = 'tool-item-name';
@@ -343,7 +359,9 @@ class SidePanelApp {
 
       const meta = document.createElement('div');
       meta.className = 'tool-item-meta';
-      meta.textContent = this.isDeclarativeTool(tool) ? 'HTML Form / Declarative' : 'JavaScript / Imperative';
+      meta.textContent = this.isDeclarativeTool(tool)
+        ? 'Declarative markup (diagnostic only)'
+        : `${tool.apiFlavor || 'WebMCP'} · ${tool.origin || 'current origin'} · ${tool.framePath || 'top'}`;
 
       button.appendChild(name);
       button.appendChild(desc);
@@ -374,8 +392,8 @@ class SidePanelApp {
     return false;
   }
 
-  selectToolByName(name) {
-    const found = this.tools.find((tool) => tool.name === name);
+  selectToolById(id) {
+    const found = [...this.tools, ...this.declarativeDiagnostics].find((tool) => tool.id === id);
     if (found) {
       this.selectTool(found);
       this.renderToolLists();
@@ -400,7 +418,7 @@ class SidePanelApp {
     }
 
     this.dom.selectedToolName.textContent = tool.name || '(unnamed_tool)';
-    this.dom.selectedToolDescription.textContent = tool.description || 'No description';
+    this.dom.selectedToolDescription.textContent = tool.schemaError || tool.diagnostic || tool.description || 'No description';
     this.dom.selectedToolType.textContent = this.isDeclarativeTool(tool)
       ? 'Declarative (HTML Form)'
       : 'Imperative (JavaScript)';
@@ -409,7 +427,11 @@ class SidePanelApp {
     this.dom.selectedToolReadOnly.textContent =
       readOnlyHint === true ? 'Yes' : readOnlyHint === false ? 'No' : 'Unknown';
 
-    this.dom.selectedToolSource.textContent = tool.source || (this.isDeclarativeTool(tool) ? 'HTML Form' : 'JavaScript');
+    this.dom.selectedToolSource.textContent = [
+      tool.apiFlavor || tool.source || (this.isDeclarativeTool(tool) ? 'HTML Form' : 'JavaScript'),
+      tool.origin,
+      tool.framePath
+    ].filter(Boolean).join(' · ');
 
     const schema = this.parseSchema(tool.inputSchema);
     this.dom.selectedToolSchema.textContent = JSON.stringify(schema, null, 2);
@@ -417,14 +439,14 @@ class SidePanelApp {
     this.dom.toolInputArgs.value = JSON.stringify(this.generateTemplateFromSchema(schema, []), null, 2);
     this.dom.toolExecutionResult.textContent = '';
 
-    this.toggleToolActions(true);
+    this.toggleToolActions(true, tool.executable !== false);
   }
 
-  toggleToolActions(enabled) {
+  toggleToolActions(enabled, executable = enabled) {
     this.dom.toolInputArgs.disabled = !enabled;
     this.dom.toolInputResetBtn.disabled = !enabled;
     this.dom.toolCopyJsonBtn.disabled = !enabled;
-    this.dom.toolExecuteBtn.disabled = !enabled;
+    this.dom.toolExecuteBtn.disabled = !executable;
     this.dom.copySelectedToolBtn.disabled = !enabled;
   }
 
@@ -540,157 +562,66 @@ class SidePanelApp {
     return date.toISOString().slice(0, 10);
   }
 
-  normalizeInputForSchema(schema, value, path = []) {
-    if (!schema || typeof schema !== 'object') {
-      return { value, changed: false };
+  validateInputForSchema(schema, value, path = '$') {
+    if (!schema || typeof schema !== 'object') return [];
+    const errors = [];
+    if (Array.isArray(schema.anyOf) && !schema.anyOf.some((candidate) => this.validateInputForSchema(candidate, value, path).length === 0)) {
+      errors.push(`${path} does not match any allowed schema`);
+      return errors;
+    }
+    if (Array.isArray(schema.oneOf)) {
+      const matches = schema.oneOf.filter((candidate) => this.validateInputForSchema(candidate, value, path).length === 0).length;
+      if (matches !== 1) errors.push(`${path} must match exactly one allowed schema (matched ${matches})`);
+    }
+    if (Object.prototype.hasOwnProperty.call(schema, 'const') && value !== schema.const) errors.push(`${path} must equal ${JSON.stringify(schema.const)}`);
+    if (Array.isArray(schema.enum) && !schema.enum.some((entry) => Object.is(entry, value))) errors.push(`${path} must be one of ${JSON.stringify(schema.enum)}`);
+
+    const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+    const typeMatches = (type) => ({
+      object: value !== null && typeof value === 'object' && !Array.isArray(value),
+      array: Array.isArray(value),
+      string: typeof value === 'string',
+      number: typeof value === 'number' && Number.isFinite(value),
+      integer: Number.isInteger(value),
+      boolean: typeof value === 'boolean',
+      null: value === null
+    })[type] === true;
+    if (types.length && !types.some(typeMatches)) {
+      errors.push(`${path} must be ${types.join(' or ')}`);
+      return errors;
     }
 
-    if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
-      return this.normalizeInputForSchema(schema.oneOf[0], value, path);
-    }
-
-    if (Array.isArray(schema.anyOf) && schema.anyOf.length > 0) {
-      return this.normalizeInputForSchema(schema.anyOf[0], value, path);
-    }
-
-    if (Array.isArray(schema.enum) && schema.enum.length > 0 && !schema.enum.includes(value)) {
-      return { value: schema.enum[0], changed: true };
-    }
-
-    if (Object.prototype.hasOwnProperty.call(schema, 'const') && value !== schema.const) {
-      return { value: schema.const, changed: true };
-    }
-
-    switch (schema.type) {
-      case 'object': {
-        const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-        let changed = !(value && typeof value === 'object' && !Array.isArray(value));
-        const out = {};
-        const properties = schema.properties || {};
-        const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-
-        for (const [key, childSchema] of Object.entries(properties)) {
-          if (source[key] === undefined && !required.has(key)) {
-            continue;
-          }
-          const childResult = this.normalizeInputForSchema(childSchema, source[key], [...path, key]);
-          out[key] = childResult.value;
-          changed = changed || childResult.changed;
-        }
-
-        for (const [key, rawValue] of Object.entries(source)) {
-          if (!Object.prototype.hasOwnProperty.call(out, key)) {
-            out[key] = rawValue;
-          }
-        }
-
-        return { value: out, changed };
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
+      for (const key of schema.required || []) if (!Object.prototype.hasOwnProperty.call(value, key)) errors.push(`${path}.${key} is required`);
+      for (const [key, child] of Object.entries(properties)) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) errors.push(...this.validateInputForSchema(child, value[key], `${path}.${key}`));
       }
-      case 'array': {
-        const source = Array.isArray(value) ? value : [];
-        let changed = !Array.isArray(value);
-
-        if (!schema.items) {
-          return { value: source, changed };
-        }
-
-        const normalizedItems = source.map((item, index) => {
-          const result = this.normalizeInputForSchema(schema.items, item, [...path, String(index)]);
-          changed = changed || result.changed;
-          return result.value;
-        });
-
-        if (normalizedItems.length === 0 && (schema.minItems > 0 || value === undefined)) {
-          normalizedItems.push(this.generateTemplateFromSchema(schema.items, [...path, '0']));
-          changed = true;
-        }
-
-        return { value: normalizedItems, changed };
+      if (schema.additionalProperties === false) {
+        for (const key of Object.keys(value)) if (!Object.prototype.hasOwnProperty.call(properties, key)) errors.push(`${path}.${key} is not allowed`);
       }
-      case 'string': {
-        let next = typeof value === 'string' ? value : this.generateTemplateFromSchema(schema, path);
-        let changed = typeof value !== 'string';
-
-        if (schema.format === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(next)) {
-          next = this.generateTemplateFromSchema(schema, path);
-          changed = true;
-        }
-
-        if (typeof schema.pattern === 'string') {
-          try {
-            const regex = new RegExp(schema.pattern);
-            if (!regex.test(next)) {
-              next = this.generateTemplateFromSchema(schema, path);
-              changed = true;
-            }
-          } catch {
-            // ignore invalid pattern
-          }
-        }
-
-        if (typeof schema.minLength === 'number' && next.length < schema.minLength) {
-          next = next.padEnd(schema.minLength, 'a');
-          changed = true;
-        }
-
-        if (typeof schema.maxLength === 'number' && next.length > schema.maxLength) {
-          next = next.slice(0, schema.maxLength);
-          changed = true;
-        }
-
-        return { value: next, changed };
-      }
-      case 'number':
-      case 'integer': {
-        let next = Number(value);
-        let changed = !Number.isFinite(next);
-        if (!Number.isFinite(next)) {
-          next = Number(this.generateTemplateFromSchema(schema, path));
-          changed = true;
-        }
-
-        if (schema.type === 'integer') {
-          const rounded = Math.round(next);
-          changed = changed || rounded !== next;
-          next = rounded;
-        }
-
-        if (typeof schema.minimum === 'number' && next < schema.minimum) {
-          next = schema.minimum;
-          changed = true;
-        }
-        if (typeof schema.exclusiveMinimum === 'number' && next <= schema.exclusiveMinimum) {
-          next = schema.type === 'integer'
-            ? Math.ceil(schema.exclusiveMinimum + 1)
-            : schema.exclusiveMinimum + 0.1;
-          changed = true;
-        }
-        if (typeof schema.maximum === 'number' && next > schema.maximum) {
-          next = schema.maximum;
-          changed = true;
-        }
-        if (typeof schema.exclusiveMaximum === 'number' && next >= schema.exclusiveMaximum) {
-          next = schema.type === 'integer'
-            ? Math.floor(schema.exclusiveMaximum - 1)
-            : schema.exclusiveMaximum - 0.1;
-          changed = true;
-        }
-
-        return { value: next, changed };
-      }
-      case 'boolean':
-        if (typeof value !== 'boolean') {
-          return { value: false, changed: true };
-        }
-        return { value, changed: false };
-      case 'null':
-        return { value: null, changed: value !== null };
-      default:
-        if (value === undefined) {
-          return { value: this.generateTemplateFromSchema(schema, path), changed: true };
-        }
-        return { value, changed: false };
     }
+    if (Array.isArray(value)) {
+      if (Number.isInteger(schema.minItems) && value.length < schema.minItems) errors.push(`${path} needs at least ${schema.minItems} items`);
+      if (Number.isInteger(schema.maxItems) && value.length > schema.maxItems) errors.push(`${path} allows at most ${schema.maxItems} items`);
+      if (schema.items) value.forEach((entry, index) => errors.push(...this.validateInputForSchema(schema.items, entry, `${path}[${index}]`)));
+    }
+    if (typeof value === 'string') {
+      if (Number.isInteger(schema.minLength) && value.length < schema.minLength) errors.push(`${path} is shorter than ${schema.minLength}`);
+      if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) errors.push(`${path} is longer than ${schema.maxLength}`);
+      if (typeof schema.pattern === 'string') {
+        try { if (!new RegExp(schema.pattern).test(value)) errors.push(`${path} does not match ${schema.pattern}`); }
+        catch { errors.push(`${path} uses an invalid schema pattern`); }
+      }
+      if (schema.format === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(value)) errors.push(`${path} must use YYYY-MM-DD`);
+    }
+    if (typeof value === 'number') {
+      if (typeof schema.minimum === 'number' && value < schema.minimum) errors.push(`${path} must be >= ${schema.minimum}`);
+      if (typeof schema.maximum === 'number' && value > schema.maximum) errors.push(`${path} must be <= ${schema.maximum}`);
+      if (typeof schema.exclusiveMinimum === 'number' && value <= schema.exclusiveMinimum) errors.push(`${path} must be > ${schema.exclusiveMinimum}`);
+      if (typeof schema.exclusiveMaximum === 'number' && value >= schema.exclusiveMaximum) errors.push(`${path} must be < ${schema.exclusiveMaximum}`);
+    }
+    return errors;
   }
 
   resetToolInputToTemplate() {
@@ -743,18 +674,32 @@ class SidePanelApp {
     }
 
     const schema = this.parseSchema(this.selectedTool.inputSchema);
-    const normalized = this.normalizeInputForSchema(schema, inputArgs, []);
-    if (normalized.changed) {
-      inputArgs = normalized.value;
-      this.dom.toolInputArgs.value = JSON.stringify(inputArgs, null, 2);
-      this.showStatus('Adjusted input to match schema constraints before execution.', 'warning', 3200);
+    const validationErrors = this.validateInputForSchema(schema, inputArgs);
+    if (validationErrors.length) {
+      this.dom.toolExecutionResult.textContent = `Input does not match the tool schema:\n- ${validationErrors.join('\n- ')}`;
+      this.dom.toolExecuteBtn.disabled = false;
+      this.showStatus('Tool input failed schema validation; it was not changed or executed.', 'error', 5000);
+      return;
+    }
+    if (this.selectedTool?.annotations?.consequentialHint === true) {
+      const approved = window.confirm(`This tool is marked consequential:\n\n${this.selectedTool.name}\n${JSON.stringify(inputArgs, null, 2)}\n\nExecute it?`);
+      if (!approved) {
+        this.dom.toolExecuteBtn.disabled = false;
+        this.showStatus('Consequential tool execution canceled.', 'warning', 3000);
+        return;
+      }
+    }
+
+    if (!Number.isInteger(this.currentTabId)) {
+      await this.refreshTools(false);
     }
 
     const start = performance.now();
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'EXECUTE_TOOL',
-        name: this.selectedTool.name,
+        tabId: this.currentTabId,
+        toolId: this.selectedTool.id,
         inputArgs
       });
 
@@ -882,117 +827,106 @@ class SidePanelApp {
     let toolsEnabled = true;
 
     for (let turn = 0; turn < maxTurns; turn += 1) {
-      const aiResponse = await aiManager.sendMessage(this.aiMessages, toolsEnabled ? this.tools : []);
+      const availableTools = toolsEnabled ? this.tools.filter((tool) => tool.executable !== false && !tool.schemaError) : [];
+      const aiResponse = await aiManager.sendMessage(this.aiMessages, availableTools);
 
       if (aiResponse?.error) {
         throw new Error(aiResponse.error);
       }
 
       const text = (aiResponse?.text || '').trim();
-      const functionCalls = Array.isArray(aiResponse?.functionCalls) ? aiResponse.functionCalls : [];
+      const toolCalls = Array.isArray(aiResponse?.toolCalls)
+        ? aiResponse.toolCalls
+        : Array.isArray(aiResponse?.functionCalls) ? aiResponse.functionCalls : [];
+      const assistantMessage = aiResponse.assistantMessage || { role: 'assistant', content: text, toolCalls };
+      this.aiMessages.push(assistantMessage);
 
       if (text) {
-        this.aiMessages.push({ role: 'assistant', content: text });
         this.appendChatLine('assistant', text);
         this.trace.push({ ts: new Date().toISOString(), type: 'ai_text', text });
-      } else if (functionCalls.length > 0) {
-        // Record assistant tool intent so conversation history strictly alternates user -> assistant
-        const toolNames = functionCalls.map((c) => c?.name || 'tool').join(', ');
-        this.aiMessages.push({ role: 'assistant', content: `[Calling tools: ${toolNames}]` });
       }
 
-      if (functionCalls.length === 0) {
-        return;
-      }
+      if (toolCalls.length === 0) return;
 
-      const toolResultLines = [];
       let executedThisTurn = 0;
       let skippedDuplicatesThisTurn = 0;
 
-      for (const call of functionCalls) {
+      for (const call of toolCalls) {
         const toolName = call?.name || '(unknown_tool)';
-        const rawArgs = call?.args;
-        let args = rawArgs;
-        if (typeof args === 'string') {
-          try {
-            args = JSON.parse(args);
-          } catch {
-            args = {};
-          }
-        }
-        if (!args || typeof args !== 'object' || Array.isArray(args)) {
-          args = {};
-        }
+        const args = call?.args;
+        const sameNameTools = this.tools.filter((tool) => tool.name === toolName);
+        const toolDef = this.tools.find((tool) => tool.id === call?.toolId) ||
+          (sameNameTools.length === 1 ? sameNameTools[0] : null);
+        let resultContent;
+        let isError = false;
 
         const callSignature = this.buildToolCallSignature(toolName, args);
         const existingCall = executedToolCalls.get(callSignature);
         if (existingCall?.status === 'success') {
           skippedDuplicatesThisTurn += 1;
-          const duplicateLine = `${toolName}(${JSON.stringify(args)}) => SKIPPED: duplicate of a successful previous call`;
-          toolResultLines.push(duplicateLine);
+          resultContent = { error: 'Skipped duplicate of a successful previous call', duplicate: true };
+          isError = true;
           this.trace.push({
             ts: new Date().toISOString(),
             type: 'ai_tool_skipped_duplicate',
             tool: toolName,
             args
           });
-          continue;
-        }
-
-        const toolDef = this.tools.find((tool) => tool.name === toolName);
-        if (toolDef) {
+        } else if (!toolsEnabled) {
+          resultContent = { error: 'Tool execution was disabled by the duplicate-call loop guard' };
+          isError = true;
+        } else if (call?.parseError) {
+          resultContent = { error: call.parseError };
+          isError = true;
+        } else if (!toolDef) {
+          resultContent = { error: `Unknown or ambiguous tool: ${toolName}` };
+          isError = true;
+        } else if (!args || typeof args !== 'object' || Array.isArray(args)) {
+          resultContent = { error: 'Tool arguments must be a JSON object' };
+          isError = true;
+        } else {
           const schema = this.parseSchema(toolDef.inputSchema);
-          const normalized = this.normalizeInputForSchema(schema, args, []);
-          if (normalized.changed) {
-            args = normalized.value;
-            this.trace.push({
-              ts: new Date().toISOString(),
-              type: 'ai_tool_args_normalized',
-              tool: toolName,
-              args
-            });
+          const validationErrors = this.validateInputForSchema(schema, args);
+          if (validationErrors.length) {
+            resultContent = { error: 'Arguments failed schema validation', validationErrors };
+            isError = true;
+          } else if (toolDef?.annotations?.consequentialHint === true && !window.confirm(`AI requests a consequential tool:\n\n${toolDef.name}\n${JSON.stringify(args, null, 2)}\n\nExecute it?`)) {
+            resultContent = { error: 'User declined consequential tool execution' };
+            isError = true;
+          } else {
+            this.appendChatLine('system', `Calling tool: ${toolName}`);
+            try {
+              if (!Number.isInteger(this.currentTabId)) {
+                await this.refreshTools(false);
+              }
+              const execResponse = await chrome.runtime.sendMessage({
+                type: 'EXECUTE_TOOL',
+                tabId: this.currentTabId,
+                toolId: toolDef.id,
+                inputArgs: args
+              });
+              if (execResponse?.error) throw new Error(execResponse.error);
+              resultContent = execResponse?.result;
+              executedThisTurn += 1;
+              executedToolCalls.set(callSignature, { status: 'success' });
+              this.trace.push({ ts: new Date().toISOString(), type: 'ai_tool_result', toolId: toolDef.id, tool: toolName, args, result: resultContent });
+            } catch (error) {
+              resultContent = { error: error.message };
+              isError = true;
+              executedToolCalls.set(callSignature, { status: 'error' });
+              this.trace.push({ ts: new Date().toISOString(), type: 'ai_tool_error', toolId: toolDef.id, tool: toolName, args, error: error.message });
+            }
           }
         }
-
-        this.appendChatLine('system', `Calling tool: ${toolName}`);
-
-        try {
-          const execResponse = await chrome.runtime.sendMessage({
-            type: 'EXECUTE_TOOL',
-            name: toolName,
-            inputArgs: args
-          });
-
-          if (execResponse?.error) {
-            throw new Error(execResponse.error);
-          }
-
-          const result = execResponse?.result;
-          toolResultLines.push(
-            `${toolName}(${JSON.stringify(args)}) => ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`
-          );
-          executedThisTurn += 1;
-          executedToolCalls.set(callSignature, { status: 'success' });
-
-          this.trace.push({
-            ts: new Date().toISOString(),
-            type: 'ai_tool_result',
-            tool: toolName,
-            args,
-            result
-          });
-        } catch (error) {
-          const line = `${toolName}(${JSON.stringify(args)}) => ERROR: ${error.message}`;
-          toolResultLines.push(line);
-          executedToolCalls.set(callSignature, { status: 'error' });
-          this.trace.push({
-            ts: new Date().toISOString(),
-            type: 'ai_tool_error',
-            tool: toolName,
-            args,
-            error: error.message
-          });
-        }
+        this.aiMessages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          name: toolName,
+          providerName: call.providerName || toolName,
+          content: resultContent,
+          isError,
+          untrusted: true
+        });
       }
 
       if (executedThisTurn === 0 && skippedDuplicatesThisTurn > 0) {
@@ -1007,13 +941,7 @@ class SidePanelApp {
           type: 'ai_loop_guard_triggered',
           skippedDuplicates: skippedDuplicatesThisTurn
         });
-        continue;
       }
-
-      const toolSummary =
-        `Tool call results:\n${toolResultLines.join('\n')}\n\n` +
-        'Continue the task. Do not repeat a tool call with identical arguments if it already succeeded.';
-      this.aiMessages.push({ role: 'user', content: toolSummary });
       this.appendChatLine('system', 'Tool results sent back to AI.');
     }
 
@@ -1031,16 +959,12 @@ class SidePanelApp {
 
   loadGeneralSettingsIntoUI() {
     this.dom.settingTheme.value = settingsManager.get('general.theme') || 'system';
-    this.dom.settingAutoOpen.checked = !!settingsManager.get('general.autoOpen');
-    this.dom.settingNotifications.checked = !!settingsManager.get('general.notifications');
     this.applyThemeSetting(this.dom.settingTheme.value);
   }
 
   async saveGeneralSettings() {
     try {
       await settingsManager.set('general.theme', this.dom.settingTheme.value);
-      await settingsManager.set('general.autoOpen', this.dom.settingAutoOpen.checked);
-      await settingsManager.set('general.notifications', this.dom.settingNotifications.checked);
       this.applyThemeSetting(this.dom.settingTheme.value);
       this.showStatus('General settings saved', 'success', 2200);
     } catch (error) {

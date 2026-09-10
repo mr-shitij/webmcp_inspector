@@ -10,12 +10,8 @@
     "test": "node --test",
     "clean": "rm -rf dist"
   },
-  "dependencies": {
-    "@google/genai": "^1.0.0"
-  },
-  "devDependencies": {
-    "esbuild": "^0.25.0"
-  },
+  "dependencies": {},
+  "devDependencies": {},
   "keywords": [
     "webmcp",
     "mcp",

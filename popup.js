@@ -81,11 +81,11 @@ function renderTools(tools) {
         <div class="tool-name">${escapeHtml(tool.name)}</div>
         <div class="tool-type">${typeLabel}</div>
       </div>
-      <button class="tool-action" data-tool="${escapeHtml(tool.name)}">Test</button>
+      <button class="tool-action">Inspect</button>
     `;
 
     toolItem.querySelector('.tool-action')?.addEventListener('click', () => {
-      openSidePanel(tool.name);
+      openSidePanel(tool.id);
     });
 
     toolList.appendChild(toolItem);
@@ -106,27 +106,6 @@ async function getToolState(forceRefresh = false) {
   return chrome.runtime.sendMessage({ type, forceRefresh });
 }
 
-async function checkWebMCPStatus() {
-  try {
-    const response = await chrome.runtime.sendMessage({ type: 'GET_TOOLS' });
-    if (response?.error) {
-      updateStatus(false, response.error);
-      return;
-    }
-
-    const tools = Array.isArray(response?.tools) ? response.tools : [];
-    if (tools.length > 0) {
-      updateStatus(true, 'WebMCP tools available');
-      return;
-    }
-
-    updateStatus(false, 'WebMCP not detected on this tab');
-  } catch (error) {
-    console.error('[Popup] Status check failed:', error);
-    updateStatus(false, 'Error checking status');
-  }
-}
-
 async function loadTools(forceRefresh = false) {
   try {
     const response = await getToolState(forceRefresh);
@@ -142,7 +121,9 @@ async function loadTools(forceRefresh = false) {
     currentTools = tools;
     renderTools(tools);
     updateToolCount(tools.length);
-    updateStatus(tools.length > 0, tools.length > 0 ? 'WebMCP tools available' : 'No tools found');
+    updateStatus(Boolean(response?.apiAvailable), tools.length > 0
+      ? 'WebMCP tools available'
+      : response?.apiAvailable ? 'WebMCP API detected · 0 tools' : 'WebMCP API not detected');
   } catch (error) {
     console.error('[Popup] Failed loading tools:', error);
     showEmptyState('Error loading tools');
@@ -150,13 +131,13 @@ async function loadTools(forceRefresh = false) {
   }
 }
 
-async function openSidePanel(toolName = '') {
+async function openSidePanel(toolId = '') {
   try {
     const currentWindow = await chrome.windows.getCurrent();
     await chrome.sidePanel.open({ windowId: currentWindow.id });
 
-    if (toolName) {
-      await chrome.storage.local.set({ selectedTool: toolName });
+    if (toolId) {
+      await chrome.storage.local.set({ selectedTool: toolId });
     }
 
     window.close();
@@ -184,7 +165,9 @@ function setupEventListeners() {
       currentTools = tools;
       renderTools(tools);
       updateToolCount(tools.length);
-      updateStatus(tools.length > 0, tools.length > 0 ? 'WebMCP tools available' : 'No tools found');
+      updateStatus(Boolean(message.apiAvailable), tools.length > 0
+        ? 'WebMCP tools available'
+        : message.apiAvailable ? 'WebMCP API detected · 0 tools' : 'WebMCP API not detected');
     }
   });
 }
@@ -192,7 +175,6 @@ function setupEventListeners() {
 async function initialize() {
   populateVersionLabel();
   setupEventListeners();
-  await checkWebMCPStatus();
   await loadTools(false);
 }
 

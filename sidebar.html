@@ -61,11 +61,11 @@
 
             <div class="tool-groups">
               <div class="tool-group">
-                <div class="group-header">Imperative Tools <span id="imperativeCount" class="badge badge-subtle">0</span></div>
+                <div class="group-header">Browser-Registered Tools <span id="imperativeCount" class="badge badge-subtle">0</span></div>
                 <div id="imperativeToolList" class="tool-list"></div>
               </div>
               <div class="tool-group">
-                <div class="group-header">Declarative Tools <span id="declarativeCount" class="badge badge-subtle">0</span></div>
+                <div class="group-header">Declarative Markup Diagnostics <span id="declarativeCount" class="badge badge-subtle">0</span></div>
                 <div id="declarativeToolList" class="tool-list"></div>
               </div>
             </div>
@@ -135,8 +135,6 @@
                 <option value="dark">Dark</option>
               </select>
 
-              <label class="checkbox-row"><input id="settingAutoOpen" type="checkbox" /> Auto-open on WebMCP pages</label>
-              <label class="checkbox-row"><input id="settingNotifications" type="checkbox" /> Show execution notifications</label>
             </div>
             <div class="button-row">
               <button id="saveGeneralSettingsBtn" class="btn">Save General Settings</button>
@@ -162,6 +160,7 @@
             <div class="settings-grid">
               <label class="field-label" for="providerApiKey">API Key</label>
               <input id="providerApiKey" type="password" autocomplete="off" placeholder="Enter API key" />
+              <p class="muted">API keys are stored locally by Chrome (not synced), but extension storage is not encrypted. Use restricted development keys only. Anthropic direct-browser mode exposes the key to this extension context.</p>
 
               <label class="field-label" for="providerServerUrl">Server URL</label>
               <input id="providerServerUrl" type="url" placeholder="http://127.0.0.1:11434" />

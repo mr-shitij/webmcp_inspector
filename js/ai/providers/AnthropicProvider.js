@@ -3,7 +3,6 @@
  */
 
 import AIProvider from '../AIProvider.js';
-import { parseToolInputSchema } from '../utils/toolSchemas.js';
 
 class AnthropicProvider extends AIProvider {
   constructor(config) {
@@ -83,10 +82,10 @@ class AnthropicProvider extends AIProvider {
   }
 
   formatTools(tools) {
-    return tools.map((tool) => ({
-      name: String(tool?.name || ''),
-      description: String(tool?.description || ''),
-      input_schema: parseToolInputSchema(tool?.inputSchema)
+    return this.prepareTools(tools).map(({ providerName, description, schema }) => ({
+      name: providerName,
+      description,
+      input_schema: schema
     }));
   }
 
@@ -97,18 +96,22 @@ class AnthropicProvider extends AIProvider {
     
     const formatted = [];
     for (const msg of chatMessages) {
-      const role = msg.role === 'assistant' ? 'assistant' : 'user';
-      const content = msg.content || '';
-
-      if (formatted.length > 0 && formatted[formatted.length - 1].role === role) {
-        formatted[formatted.length - 1].content += `\n\n${content}`;
+      if (msg.role === 'assistant') {
+        const content = msg.providerData?.anthropicContent || [
+          ...(msg.content ? [{ type: 'text', text: msg.content }] : []),
+          ...(msg.toolCalls || []).map((call) => ({ type: 'tool_use', id: call.id, name: call.providerName || call.name, input: call.args || {} }))
+        ];
+        formatted.push({ role: 'assistant', content });
+      } else if (msg.role === 'tool') {
+        const block = { type: 'tool_result', tool_use_id: msg.toolCallId, content: this.toolResultText(msg), is_error: Boolean(msg.isError) };
+        if (formatted.at(-1)?.role === 'user' && Array.isArray(formatted.at(-1).content)) formatted.at(-1).content.push(block);
+        else formatted.push({ role: 'user', content: [block] });
       } else {
-        formatted.push({ role, content });
+        const content = String(msg.content || '');
+        if (formatted.at(-1)?.role === 'user' && typeof formatted.at(-1).content === 'string') formatted.at(-1).content += `\n\n${content}`;
+        else if (formatted.at(-1)?.role === 'user' && Array.isArray(formatted.at(-1).content)) formatted.at(-1).content.push({ type: 'text', text: content });
+        else formatted.push({ role: 'user', content });
       }
-    }
-
-    if (formatted.length > 0 && formatted[0].role !== 'user') {
-      formatted.unshift({ role: 'user', content: 'Hello' });
     }
 
     return {
@@ -155,21 +158,20 @@ class AnthropicProvider extends AIProvider {
   }
 
   parseResponse(data) {
-    const result = { text: '', functionCalls: [] };
+    const result = { text: '', toolCalls: [] };
 
     if (data.content) {
       for (const block of data.content) {
         if (block.type === 'text') {
           result.text += block.text;
         } else if (block.type === 'tool_use') {
-          result.functionCalls.push({
-            name: block.name,
-            args: block.input
-          });
+          result.toolCalls.push(this.resolveToolCall(block.name, block.id, block.input));
         }
       }
     }
 
+    result.functionCalls = result.toolCalls;
+    result.assistantMessage = { role: 'assistant', content: result.text, toolCalls: result.toolCalls, providerData: { anthropicContent: data.content } };
     return result;
   }
 

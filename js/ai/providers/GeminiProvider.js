@@ -3,7 +3,7 @@
  */
 
 import AIProvider from '../AIProvider.js';
-import { parseToolInputSchema, toGeminiSchema } from '../utils/toolSchemas.js';
+import { toGeminiSchema } from '../utils/toolSchemas.js';
 
 class GeminiProvider extends AIProvider {
   constructor(config) {
@@ -23,9 +23,7 @@ class GeminiProvider extends AIProvider {
         return { success: false, error: 'API key not configured' };
       }
 
-      const response = await fetch(
-        `${this.baseUrl}/models?key=${this.config.apiKey}`
-      );
+      const response = await fetch(`${this.baseUrl}/models`, { headers: { 'x-goog-api-key': this.config.apiKey } });
 
       if (!response.ok) {
         const error = await response.json();
@@ -44,7 +42,7 @@ class GeminiProvider extends AIProvider {
   async getModels() {
     try {
       if (!this.config.apiKey) return [];
-      const response = await fetch(`${this.baseUrl}/models?key=${this.config.apiKey}`);
+      const response = await fetch(`${this.baseUrl}/models`, { headers: { 'x-goog-api-key': this.config.apiKey } });
       if (!response.ok) return [];
 
       const data = await response.json();
@@ -65,31 +63,33 @@ class GeminiProvider extends AIProvider {
   }
 
   formatTools(tools) {
-    return tools.map((tool) => ({
-      name: String(tool?.name || ''),
-      description: String(tool?.description || ''),
-      parameters: toGeminiSchema(parseToolInputSchema(tool?.inputSchema))
+    return this.prepareTools(tools).map(({ providerName, description, schema }) => ({
+      name: providerName,
+      description,
+      parameters: toGeminiSchema(schema)
     }));
   }
 
   formatMessages(messages) {
     const formatted = [];
     for (const msg of messages) {
-      const role = msg.role === 'assistant' ? 'model' : 'user';
-      const text = msg.role === 'system' ? `System: ${msg.content}` : (msg.content || '');
-
-      if (formatted.length > 0 && formatted[formatted.length - 1].role === role) {
-        formatted[formatted.length - 1].parts.push({ text });
+      if (msg.role === 'system') continue;
+      if (msg.role === 'assistant') {
+        if (msg.providerData?.geminiContent) formatted.push(msg.providerData.geminiContent);
+        else formatted.push({ role: 'model', parts: [
+          ...(msg.content ? [{ text: msg.content }] : []),
+          ...(msg.toolCalls || []).map((call) => ({ functionCall: { id: call.id, name: call.providerName || call.name, args: call.args || {} } }))
+        ] });
+      } else if (msg.role === 'tool') {
+        const response = { output: this.toolResultText(msg), isError: Boolean(msg.isError) };
+        const part = { functionResponse: { id: msg.toolCallId, name: msg.providerName || msg.name, response } };
+        if (formatted.at(-1)?.role === 'user') formatted.at(-1).parts.push(part);
+        else formatted.push({ role: 'user', parts: [part] });
       } else {
-        formatted.push({
-          role,
-          parts: [{ text }]
-        });
+        const part = { text: String(msg.content || '') };
+        if (formatted.at(-1)?.role === 'user') formatted.at(-1).parts.push(part);
+        else formatted.push({ role: 'user', parts: [part] });
       }
-    }
-
-    if (formatted.length > 0 && formatted[0].role !== 'user') {
-      formatted.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
     }
 
     return formatted;
@@ -97,7 +97,7 @@ class GeminiProvider extends AIProvider {
 
   async sendMessage(messages, tools = []) {
     try {
-      const url = `${this.baseUrl}/models/${this.config.model}:generateContent?key=${this.config.apiKey}`;
+      const url = `${this.baseUrl}/models/${this.config.model}:generateContent`;
       
       const body = {
         contents: this.formatMessages(messages),
@@ -106,6 +106,8 @@ class GeminiProvider extends AIProvider {
           maxOutputTokens: this.config.maxTokens
         }
       };
+      const system = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n\n');
+      if (system) body.systemInstruction = { parts: [{ text: system }] };
 
       if (tools.length > 0) {
         body.tools = [{ functionDeclarations: this.formatTools(tools) }];
@@ -113,7 +115,7 @@ class GeminiProvider extends AIProvider {
 
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.config.apiKey },
         body: JSON.stringify(body)
       });
 
@@ -136,7 +138,7 @@ class GeminiProvider extends AIProvider {
     }
 
     const content = candidate.content;
-    const result = { text: '', functionCalls: [] };
+    const result = { text: '', toolCalls: [] };
 
     if (content?.parts) {
       for (const part of content.parts) {
@@ -144,22 +146,17 @@ class GeminiProvider extends AIProvider {
           result.text += part.text;
         }
         if (part.functionCall) {
-          let args = part.functionCall.args;
-          if (typeof args === 'string') {
-            try {
-              args = JSON.parse(args);
-            } catch {
-              args = {};
-            }
-          }
-          result.functionCalls.push({
-            name: part.functionCall.name,
-            args: args && typeof args === 'object' ? args : {}
+          const parsed = this.parseArguments(part.functionCall.args);
+          result.toolCalls.push({
+            ...this.resolveToolCall(part.functionCall.name, part.functionCall.id, parsed.args, { geminiPart: part }),
+            parseError: parsed.parseError
           });
         }
       }
     }
 
+    result.functionCalls = result.toolCalls;
+    result.assistantMessage = { role: 'assistant', content: result.text, toolCalls: result.toolCalls, providerData: { geminiContent: content } };
     return result;
   }
 

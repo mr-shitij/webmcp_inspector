@@ -1,6 +1,6 @@
 # Privacy Policy for WebMCP Inspector
 
-Effective date: February 16, 2026
+Effective date: September 10, 2026
 
 WebMCP Inspector is a developer tool extension for discovering, testing, and debugging WebMCP tools on web pages.
 
@@ -11,7 +11,7 @@ This policy explains what data the extension processes and how it is used.
 The extension may process the following categories of data:
 
 1. Authentication information
-- API keys entered by the user for AI providers (for example Gemini, OpenAI, Anthropic, Ollama-compatible endpoints).
+- API keys entered by the user for hosted AI providers (for example Gemini, OpenAI, and Anthropic).
 
 2. Personal communications
 - User-entered AI chat prompts and assistant/tool responses shown in the extension UI.
@@ -30,16 +30,16 @@ Data is used only to provide the extension's core function:
 ## Storage
 
 The extension stores data using Chrome extension storage:
-- `chrome.storage.sync`: settings and provider configuration.
-- `chrome.storage.local`: short-lived local UI state.
+- `chrome.storage.sync`: non-secret preferences and provider configuration. API keys are explicitly removed from this synced copy.
+- `chrome.storage.local`: provider API keys and short-lived local UI state.
 
-Data is stored to support extension functionality and user experience only.
+Chrome extension storage is not encrypted. Users should use restricted development keys and remove them when they are no longer required. AI conversation and trace history remain in the open side panel's memory and are not intentionally persisted.
 
 ## Data Sharing and Transfer
 
 We do not sell user data.
 
-When the user configures an AI provider, relevant request content is sent directly to that selected provider endpoint to fulfill the requested AI function. This transfer is user-initiated and required for that feature.
+When the user uses AI Chat, prompts plus relevant page-controlled tool names, descriptions, schemas, calls, and results are sent directly to the selected provider endpoint. This transfer is user-initiated and required for that feature. Manual inspection and manual tool execution do not send content to an AI provider.
 
 Except for these functional API requests, we do not transfer user data to third parties for unrelated purposes.
 
